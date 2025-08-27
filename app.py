@@ -60,6 +60,11 @@ SLOTS: List[Slot] = [
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
+# מותגים מוכרים בישראל
+allowed_brands = ["טויוטה","מאזדה","יונדאי","קיה","פולקסווגן","סקודה",
+"סוזוקי","מיצובישי","ניסאן","הונדה","פיג'ו","סיטרואן","רנו",
+"שברולט","פורד","סיאט","אופל"]
+
 # =========================
 # App state
 # =========================
@@ -128,12 +133,34 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
 
+def normalize_costs(ac: Dict[str,int], model:str) -> Dict[str,int]:
+    if ac["insurance"] < 6000 or ac["insurance"] > 12000:
+        ac["insurance"] = 9000
+    if ac["fuel"] < 3000 or ac["fuel"] > 15000:
+        ac["fuel"] = 8000
+    if ac["maintenance"] < 1000 or ac["maintenance"] > 6000:
+        ac["maintenance"] = 3000
+    if ac["repairs"] < 500 or ac["repairs"] > 5000:
+        ac["repairs"] = 2000
+    if ac["depreciation"] < 2000 or ac["depreciation"] > 15000:
+        if any(b in model for b in ["טויוטה","מאזדה","הונדה","סוזוקי","ניסאן","מיצובישי"]):
+            ac["depreciation"] = 4000
+        elif any(b in model for b in ["יונדאי","קיה"]):
+            ac["depreciation"] = 5000
+        elif any(b in model for b in ["פולקסווגן","סקודה","סיאט","אופל"]):
+            ac["depreciation"] = 6000
+        elif any(b in model for b in ["פיג'ו","סיטרואן","רנו"]):
+            ac["depreciation"] = 7000
+        else:
+            ac["depreciation"] = 5000
+    return ac
+
 def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -> Dict[str,Any]:
     results = []
     for _ in range(repeats):
         sub_prompt = f"""
-        בדוק עבור הדגם {model} (יד שנייה בישראל).
-        התחשב בערכי יסוד:
+        בדוק עבור הדגם {model} (יד שנייה בישראל, מחירים והערכות בשקלים חדשים – ₪ בלבד).
+        התחשב בערכי יסוד מקומיים:
         - מחיר ליטר בנזין בישראל ~7 ₪
         - ביטוח שנתי לנהג צעיר: 7,000–10,000 ₪
         - טיפולים שנתיים: 2,000–3,500 ₪
@@ -142,15 +169,15 @@ def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -
         החזר JSON:
         {{
           "model":"{model}",
-          "reliability":90,
+          "reliability":88,
           "annual_cost":{{
              "insurance": 8500,
-             "fuel": 7200,
-             "maintenance": 2500,
+             "fuel": 7500,
+             "maintenance": 3000,
              "repairs": 2000,
              "depreciation": 4000
           }},
-          "issues":["גיר","חשמל"]
+          "issues":["גיר","מערכת חשמל"]
         }}
         """
         txt = call_model(sub_prompt)
@@ -161,7 +188,7 @@ def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -
             pass
 
     if not results: 
-        return {"model":model,"reliability":50,"annual_cost":{"insurance":9000,"fuel":7000,"maintenance":3000,"repairs":2000,"depreciation":4000},"issues":["נתון חסר"]}
+        return {"model":model,"reliability":50,"annual_cost":{"insurance":9000,"fuel":8000,"maintenance":3000,"repairs":2000,"depreciation":5000},"issues":["נתון חסר"]}
 
     avg = {"model":model,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
     for r in results:
@@ -173,6 +200,8 @@ def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -
     avg["reliability"] = int(avg["reliability"]/n)
     for k in avg["annual_cost"]:
         avg["annual_cost"][k] = int(avg["annual_cost"][k]/n)
+
+    avg["annual_cost"] = normalize_costs(avg["annual_cost"], model)
     avg["issues"] = list(set(avg["issues"]))
     return avg
 
@@ -208,11 +237,25 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
     else:
         answers = st.session_state.answers
+
+        # 🔹 סיכום דרישות המשתמש
+        summary_lines = []
+        for s in SLOTS:
+            val = answers.get(s.key)
+            if val not in [None,"",0]:
+                summary_lines.append(f"- {s.label}: {val}")
+        summary_text = "### סיכום דרישותיך\n" + "\n".join(summary_lines)
         with st.chat_message("assistant"):
-            st.markdown("✅ סיימנו את שלב השאלון. מחפש רכבים מתאימים...")
+            st.markdown(summary_text)
+        st.session_state.messages.append({"role":"assistant","content":summary_text})
+
+        # 🔹 חיפוש רכבים
+        with st.chat_message("assistant"):
+            st.markdown("✅ מחפש רכבים מתאימים בישראל...")
 
         prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
-בחר 5 דגמי רכבים יד שנייה זמינים בישראל *בתוך התקציב*.
+בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד (יבוא סדיר או מקביל).
+אל תכלול דגמים שלא נמכרים בפועל בישראל.
 החזר JSON:
 {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
         txt = call_model(prompt)
@@ -221,15 +264,24 @@ if user_text:
         except Exception:
             recs = {"recommendations":[]}
 
-        all_models = [r["model"] for r in recs.get("recommendations",[])]
-        if not all_models:
-            all_models = ["טויוטה קורולה", "מאזדה 3", "קיה סיד"]
+        filtered = []
+        for r in recs.get("recommendations",[]):
+            if any(brand in r["model"] for brand in allowed_brands):
+                filtered.append(r)
+        if not filtered:
+            filtered = [{"model":"טויוטה קורולה","why":"אמינה מאוד ובשוק הישראלי"},
+                        {"model":"מאזדה 3","why":"פופולרית ושמירת ערך"},
+                        {"model":"יונדאי i30","why":"נפוצה מאוד"},
+                        {"model":"קיה סיד","why":"משפחתית חסכונית"},
+                        {"model":"סקודה אוקטביה","why":"מרווחת ופופולרית בציים"}]
+
+        all_models = [r["model"] for r in filtered]
 
         results = []
         for model in all_models:
             results.append(check_model_reliability(model, answers, repeats=3))
 
-        # טבלה מפורטת
+        # 🔹 טבלה מפורטת
         table_md = "| דגם | אמינות | ביטוח | דלק | תחזוקה | תיקונים | ירידת ערך | סה\"כ | תקלות |\n|---|---|---|---|---|---|---|---|---|\n"
         best_model = None
         best_total = 10**9
@@ -247,4 +299,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("האפליקציה מבצעת 3 בדיקות לכל דגם ומציגה ממוצע של אמינות + עלויות תחזוקה מפורטות.")
+st.caption("האפליקציה בודקת רק דגמים זמינים בישראל, מסכמת את דרישות המשתמש, מבצעת 3 בדיקות ממוצעות לכל דגם, מתקנת ערכים לא הגיוניים, ומחזירה עלויות מפורטות בשקלים חדשים.")
