@@ -5,10 +5,11 @@
 import os
 import json
 import re
+import time
+import requests
+from bs4 import BeautifulSoup
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-import time
-
 import streamlit as st
 
 try:
@@ -74,11 +75,11 @@ REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 # App state
 # =========================
 if "messages" not in st.session_state:
-    st.session_state.messages: List[Dict[str, str]] = [
+    st.session_state.messages = [
         {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40,000 או 40 אלף)"}
     ]
 if "answers" not in st.session_state:
-    st.session_state.answers: Dict[str, Any] = {}
+    st.session_state.answers = {}
 if "last_ask" not in st.session_state:
     st.session_state.last_ask = None
 
@@ -105,28 +106,38 @@ else:
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
 # =========================
-# Helpers
+# Yad2 Price Fetch
 # =========================
-def parse_int(text: str) -> Optional[int]:
-    text = text.lower().replace(",", "").replace(" ", "")
-    if "אלף" in text:
-        nums = re.findall(r"\d+", text)
-        if nums:
-            return int(nums[0]) * 1000
-    nums = re.findall(r"\d+", text)
-    if nums:
+YAD2_IDS = {
+    "פיאט בראבו": {"manufacturer": 45, "model": 10631},
+    "מאזדה 3": {"manufacturer": 38, "model": 824},
+    "טויוטה קורולה": {"manufacturer": 32, "model": 845},
+    "קיה סיד": {"manufacturer": 47, "model": 850},
+    "יונדאי i30": {"manufacturer": 26, "model": 832},
+}
+
+def search_yad2_price(manufacturer_id: int, model_id: int) -> Optional[tuple]:
+    url = f"https://www.yad2.co.il/price-list/feed?manufacturer={manufacturer_id}&model={model_id}"
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+    except Exception:
+        return None
+    soup = BeautifulSoup(r.text, "xml")
+    prices = []
+    for item in soup.find_all("item"):
         try:
-            return int(nums[0])
-        except Exception:
-            return None
+            price = int(item.find("price").text.replace(",", ""))
+            prices.append(price)
+        except:
+            continue
+    if prices:
+        return min(prices), max(prices)
     return None
 
-def next_missing_required() -> Optional[Slot]:
-    for s in SLOTS:
-        if s.required and (s.key not in st.session_state.answers or st.session_state.answers[s.key] in [None,"",0,""]):
-            return s
-    return None
-
+# =========================
+# Model Call Helper
+# =========================
 def call_model(prompt: str) -> str:
     try:
         if PROVIDER == "OpenAI" and has_key and oai_client:
@@ -143,75 +154,51 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
 
-def normalize_costs(ac: Dict[str,int]) -> Dict[str,int]:
-    if ac["insurance"] < 6000 or ac["insurance"] > 12000:
-        ac["insurance"] = 9000
-    if ac["fuel"] < 3000 or ac["fuel"] > 15000:
-        ac["fuel"] = 8000
-    if ac["maintenance"] < 1000 or ac["maintenance"] > 6000:
-        ac["maintenance"] = 3000
-    if ac["repairs"] < 500 or ac["repairs"] > 5000:
-        ac["repairs"] = 2000
-    if ac["depreciation"] < 2000 or ac["depreciation"] > 15000:
-        ac["depreciation"] = 5000
-    return ac
+# =========================
+# Reliability Check with Yad2 Price
+# =========================
+def check_model_reliability(model: str, answers: Dict[str,Any]) -> Dict[str,Any]:
+    # בדיקת מחיר מיד2 אם קיים מזהה
+    yad2_range = None
+    for name, ids in YAD2_IDS.items():
+        if name in model:
+            yad2_range = search_yad2_price(ids["manufacturer"], ids["model"])
+            break
 
-def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=2) -> Dict[str,Any]:
-    results = []
-    for _ in range(repeats):
-        sub_prompt = f"""
-        בדוק עבור הדגם {model} (יד שנייה בישראל).
-        ודא שהדגם נמכר בפועל בישראל ובמחיר בין {answers.get('budget_min')} ל-{answers.get('budget_max')} ₪
-        לפי מחירון לוי יצחק או אתר יד2. אם הדגם לא נכנס לתקציב – החזר "valid": false.
+    if yad2_range:
+        low, high = yad2_range
+        context_price = f"נמצאו מחירים ב-Yad2 בטווח {low}–{high} ₪"
+    else:
+        context_price = "לא נמצאו מחירים ב-Yad2, השתמש בהערכה"
 
-        החזר JSON:
-        {{
-          "model":"{model}",
-          "price": 78000,
-          "year": 2019,
-          "valid": true,
-          "reliability":88,
-          "annual_cost":{{
-             "insurance": 8500,
-             "fuel": 7500,
-             "maintenance": 3000,
-             "repairs": 2000,
-             "depreciation": 4000
-          }},
-          "issues":["גיר","מערכת חשמל"]
-        }}
-        """
-        txt = call_model(sub_prompt)
-        try:
-            data = json.loads(re.search(r"\{.*\}", txt, re.S).group())
-            results.append(data)
-        except Exception:
-            pass
-
-    if not results: 
-        return {"model":model,"valid":False,"price":0,"year":0,"reliability":50,"annual_cost":{"insurance":9000,"fuel":8000,"maintenance":3000,"repairs":2000,"depreciation":5000},"issues":["נתון חסר"]}
-
-    avg = {"model":model,"valid":True,"price":0,"year":0,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
-    for r in results:
-        if not r.get("valid", True):
-            avg["valid"] = False
-            continue
-        avg["reliability"] += r.get("reliability",0)
-        avg["price"] += r.get("price",0)
-        avg["year"] = max(avg["year"], r.get("year",0))
-        for k in avg["annual_cost"]:
-            avg["annual_cost"][k] += r.get("annual_cost",{}).get(k,0)
-        avg["issues"].extend(r.get("issues",[]))
-    n = len(results)
-    if n > 0:
-        avg["reliability"] = int(avg["reliability"]/n)
-        avg["price"] = int(avg["price"]/n) if avg["price"] else 0
-        for k in avg["annual_cost"]:
-            avg["annual_cost"][k] = int(avg["annual_cost"][k]/n)
-
-    avg["annual_cost"] = normalize_costs(avg["annual_cost"])
-    avg["issues"] = list(set(avg["issues"]))
-    return avg
+    sub_prompt = f"""
+    בדוק עבור הדגם {model} (יד שנייה בישראל).
+    {context_price}.
+    ודא שהמחיר בתוך הטווח {answers.get('budget_min')}–{answers.get('budget_max')} ₪.
+    החזר JSON:
+    {{
+      "model":"{model}",
+      "price": 78000,
+      "year": 2019,
+      "valid": true,
+      "reliability":88,
+      "annual_cost":{{
+         "insurance": 8500,
+         "fuel": 7500,
+         "maintenance": 3000,
+         "repairs": 2000,
+         "depreciation": 4000
+      }},
+      "issues":["גיר","מערכת חשמל"]
+    }}
+    """
+    txt = call_model(sub_prompt)
+    try:
+        return json.loads(re.search(r"\{.*\}", txt, re.S).group())
+    except Exception:
+        return {"model":model,"valid":False,"price":0,"year":0,"reliability":50,
+                "annual_cost":{"insurance":9000,"fuel":8000,"maintenance":3000,"repairs":2000,"depreciation":5000},
+                "issues":["נתון חסר"]}
 
 # =========================
 # Display history
@@ -230,76 +217,54 @@ if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
     if st.session_state.get("last_ask"):
         slot = st.session_state.last_ask
-        if slot.kind == "int":
-            val = parse_int(user_text)
-            if val: st.session_state.answers[slot.key] = val
-        else:
-            st.session_state.answers[slot.key] = user_text.strip()
+        st.session_state.answers[slot.key] = user_text.strip()
         st.session_state.last_ask = None
 
-    nxt = next_missing_required()
-    if nxt:
+    # בדוק אם יש עוד שאלות
+    if any(s.key not in st.session_state.answers for s in SLOTS if s.required):
+        nxt = next(s for s in SLOTS if s.required and s.key not in st.session_state.answers)
         st.session_state.last_ask = nxt
         with st.chat_message("assistant"):
             st.markdown(nxt.prompt)
         st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
     else:
         answers = st.session_state.answers
-
-        # סיכום דרישות
-        summary_lines = []
-        for s in SLOTS:
-            val = answers.get(s.key)
-            if val not in [None,"",0]:
-                summary_lines.append(f"- {s.label}: {val}")
+        summary_lines = [f"- {s.label}: {answers.get(s.key)}" for s in SLOTS if answers.get(s.key)]
         summary_text = "### סיכום דרישותיך\n" + "\n".join(summary_lines)
         with st.chat_message("assistant"):
             st.markdown(summary_text)
         st.session_state.messages.append({"role":"assistant","content":summary_text})
 
-        # Progress bar
+        # Progress
         with st.chat_message("assistant"):
-            progress_text = st.empty()
             bar = st.progress(0)
             for i in range(100):
                 time.sleep(0.01)
                 bar.progress(i+1)
-                progress_text.markdown("⏳ מחפש רכבים מתאימים בישראל...")
             bar.empty()
-            progress_text.empty()
 
-        # חיפוש רכבים – עד 100
+        # בקשת 10 דגמים
         prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
-החזר עד 100 דגמי רכבים יד שנייה הנמכרים בישראל בלבד.
-לכל דגם כלול:
-- model: שם מלא של הדגם
-- price: מחיר ממוצע בשקלים (₪)
-- year: שנתון מומלץ
-- why: נימוק קצר
-- valid: true/false (האם עומד בתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪ לפי מחירון לוי יצחק או יד2)
-
+בחר את 10 דגמי הרכבים היד שנייה שנמכרים בישראל שאתה מעריך שהם הכי מתאימים.
 החזר JSON:
 {{"recommendations":[{{"model":"דגם","price":75000,"year":2018,"why":"נימוק קצר","valid":true}}]}}"""
         txt = call_model(prompt)
         try:
             recs = json.loads(re.search(r"\{.*\}", txt, re.S).group())
-        except Exception:
+        except:
             recs = {"recommendations":[]}
 
         all_recs = recs.get("recommendations", [])
-        valid_recs = [r for r in all_recs if r.get("valid", True) and answers.get("budget_min") <= r.get("price",0) <= answers.get("budget_max")]
-
         results = []
-        for r in valid_recs:
-            checked = check_model_reliability(r["model"], answers, repeats=2)
-            checked["price"] = r.get("price")
-            checked["year"] = r.get("year")
+        for r in all_recs:
+            checked = check_model_reliability(r["model"], answers)
+            checked["price"] = r.get("price", checked["price"])
+            checked["year"] = r.get("year", checked["year"])
             results.append(checked)
 
-        # דירוג – אמינות גבוהה + עלות נמוכה
+        # דירוג 5 מובילים
         def score(item):
-            ac = item["annual_cost"]
-            total = sum(ac.values())
+            total = sum(item["annual_cost"].values())
             return (-item["reliability"], total)
 
         results_sorted = sorted(results, key=score)[:5]
@@ -322,4 +287,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("האפליקציה מסכמת את דרישות המשתמש, מחפשת עד 100 דגמים, מסננת רק את אלו שבתקציב, בודקת אמינות ועלויות, ומציגה את 5 המתאימים ביותר.")
+st.caption("האפליקציה מחפשת 10 דגמים, בודקת מחירים חיים ב-Yad2 (אם קיים מזהה), בודקת אמינות ועלויות, ומציגה את 5 המומלצים ביותר.")
