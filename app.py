@@ -1,3 +1,4 @@
+```python
 # -*- coding: utf-8 -*-
 # UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
 # Run: streamlit run app.py
@@ -74,7 +75,7 @@ SLOTS: List[Slot] = [
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
     Slot("parking", "חניה", "יש לך חניה פרטית או חניה ברחוב?", "select", options=["פרטית","רחוב"]),
     Slot("fuel_importance", "חשיבות צריכת דלק", "כמה חשובה לך צריכת דלק – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("km_per_year", "ק""מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
+    Slot("km_per_year", 'ק"מ לשנה', "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
     Slot("tax_importance", "חשיבות אגרת טסט", "עד כמה חשובה עלות אגרת הרישוי – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("ins_importance", "חשיבות ביטוח", "עד כמה חשובה עלות הביטוח – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("gearbox", "תיבת הילוכים (לא חובה)", "יש לך העדפה לגיר – אוטומט או ידני?", "select", required=False, options=["לא משנה","אוטומט","ידני"]),
@@ -135,7 +136,6 @@ FORMAT_HINT = {
 }
 
 # Compose minimal context for the model
-
 def build_chat_for_llm(messages: List[Dict[str,str]], answers: Dict[str,Any]) -> List[Dict[str,str]]:
     ctx = [SYSTEM_PROMPT, FORMAT_HINT]
     # Include a compact state summary
@@ -144,7 +144,6 @@ def build_chat_for_llm(messages: List[Dict[str,str]], answers: Dict[str,Any]) ->
     # recent messages (last 8 for brevity)
     ctx.extend(messages[-8:])
     return ctx
-
 
 def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
     """Call the chosen provider and parse a JSON dict. Fallback to a safe default if parsing fails."""
@@ -158,14 +157,13 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
             txt = resp.choices[0].message.content
         elif PROVIDER == "Gemini" and gem_model is not None:
             # Gemini expects a single string; we concatenate
-            as_text = "
-".join([f"{m['role']}: {m['content']}" for m in context_msgs])
+            as_text = "\n".join([f"{m['role']}: {m['content']}" for m in context_msgs])
             r = gem_model.generate_content(as_text)
             txt = r.text
         else:
             # No API key → start from budget_min with buttons
             txt = '{"assistant_message": "(אין מפתח API מוגדר. אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
-    except Exception as e:
+    except Exception:
         txt = '{"assistant_message": "(שגיאה זמנית בתשובה, אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
 
     # Try to extract JSON from txt
@@ -186,16 +184,16 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
 # =========================
 # Helper UI
 # =========================
-
 def render_quick_replies(options: List[str]):
-    cols = st.columns(min(3, len(options))) if options else []
+    if not options:
+        return None
+    cols = st.columns(min(3, len(options)))
     clicks = None
-    for i, opt in enumerate(options or []):
+    for i, opt in enumerate(options):
         with cols[i % len(cols)]:
-            if st.button(opt):
+            if st.button(opt, key=f"qr-{opt}-{i}"):
                 clicks = opt
     return clicks
-
 
 def progress_bar(answers: Dict[str,Any]):
     filled = sum(1 for k in REQUIRED_KEYS if k in answers and answers[k] not in [None, "", 0])
@@ -257,22 +255,18 @@ if user_text:
     assistant_message = payload.get("assistant_message") or "קיבלתי. נמשיך."
 
     # 3) "Ask next" with quick replies
-ask_next = payload.get("ask_next")
-if ask_next and isinstance(ask_next, dict):
-    q = ask_next.get("question") or "שאלה הבאה:"
-    opts = ask_next.get("options", [])
-    # remember what we asked so we can bind quick-reply clicks
-    st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
-    with st.chat_message("assistant"):
-        st.markdown(assistant_message + "
-
-**" + q + "**")
-        choice = render_quick_replies(opts)
-        if choice:
-            st.session_state._clicked_choice = choice
-    st.session_state.messages.append({"role":"assistant","content":assistant_message + ("
-
-"+q if q else "")})
+    ask_next = payload.get("ask_next")
+    if ask_next and isinstance(ask_next, dict):
+        q = ask_next.get("question") or "שאלה הבאה:"
+        opts = ask_next.get("options", [])
+        # remember what we asked so we can bind quick-reply clicks
+        st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
+        with st.chat_message("assistant"):
+            st.markdown(assistant_message + f"\n\n**{q}**")
+            choice = render_quick_replies(opts)
+            if choice:
+                st.session_state._clicked_choice = choice
+        st.session_state.messages.append({"role":"assistant","content":assistant_message + ("\n\n" + q if q else "")})
     else:
         # If model did not provide ask_next – fall back to next required slot not filled
         missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
@@ -281,9 +275,7 @@ if ask_next and isinstance(ask_next, dict):
             # remember last ask for quick-reply binding
             st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
             with st.chat_message("assistant"):
-                st.markdown(assistant_message + f"
-
-**{nxt.prompt}**")
+                st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
                 choice = render_quick_replies(nxt.options or [])
                 if choice:
                     st.session_state._clicked_choice = choice
@@ -311,3 +303,4 @@ if ask_next and isinstance(ask_next, dict):
 # =========================
 st.markdown("---")
 st.caption("גרסת MVP: שאלון מוטמע בצ'אט + בחירת ספק מודל (OpenAI/Gemini). בהמשך: ניקוד מתקדם, בדיקת אמינות, ויצוא PDF.")
+```
