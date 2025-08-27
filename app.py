@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# UsedCarAdvisor – Structured Questionnaire + Free-text + Final Flexible Description
+# UsedCarAdvisor – Questionnaire + Free-text description before summary
 # Run: streamlit run app.py
 
 import os, json, re
@@ -63,6 +63,8 @@ if "answers" not in st.session_state:
     st.session_state.answers = {}
 if "last_ask" not in st.session_state:
     st.session_state.last_ask = None
+if "free_text_done" not in st.session_state:
+    st.session_state.free_text_done = False
 
 # שאלון
 @dataclass
@@ -82,10 +84,6 @@ SLOTS: List[Slot] = [
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
     Slot("engine_size", "נפח מנוע", "איזה נפח מנוע בערך מתאים לך? (למשל 1600)", "int"),
     Slot("turbo", "טורבו", "האם חשוב לך טורבו?", "text"),
-    # שדה סופי – תיאור חופשי
-    Slot("free_description", "תיאור חופשי של הדרישות",
-         "ולבסוף, ספר במילים חופשיות מה חשוב לך ברכב (לדוגמה: 'אני רוצה רכב חסכוני, שלא יקר בתחזוקה ושייראה צעיר').",
-         "text", required=False)
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
@@ -135,17 +133,27 @@ if user_text:
         st.session_state.answers[st.session_state.last_ask.key] = user_text.strip()
         st.session_state.last_ask = None
 
-    # אם עדיין חסרים שדות → המשך שאלון
+    # אם עוד יש שאלות מובנות
     nxt = next_missing_required()
     if nxt:
         st.session_state.last_ask = nxt
         with st.chat_message("assistant"):
             st.markdown(nxt.prompt)
         st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
+
+    # אם סיימנו את המובנות → לשאול תיאור חופשי (רק פעם אחת)
+    elif not st.session_state.free_text_done:
+        st.session_state.answers["free_description"] = user_text.strip()
+        st.session_state.free_text_done = True
+
+        with st.chat_message("assistant"):
+            st.markdown("ולבסוף, ספר במילים חופשיות מה חשוב לך ברכב (לדוגמה: 'חסכוני בתחזוקה, מרווח, שלא יאבד ערך מהר').")
+        st.session_state.messages.append({"role":"assistant","content":"ולבסוף, ספר במילים חופשיות מה חשוב לך ברכב."})
+
     else:
-        # הכל מולא → סיכום דרישות + פרומפט חיפוש
+        # סיכום דרישות + פרומפט חיפוש
         answers = st.session_state.answers
-        summary = "### סיכום דרישותיך\n" + "\n".join([f"- {s.label}: {answers.get(s.key)}" for s in SLOTS if answers.get(s.key)])
+        summary = "### סיכום דרישותיך\n" + "\n".join([f"- {s.label}: {answers.get(s.key)}" for s in SLOTS if answers.get(s.key)]) + f"\n- תיאור חופשי: {answers.get('free_description','')}"
         with st.chat_message("assistant"):
             st.markdown(summary)
         st.session_state.messages.append({"role":"assistant","content":summary})
@@ -153,8 +161,11 @@ if user_text:
         # פרומפט חיפוש – כולל גם את התיאור החופשי
         search_prompt = f"""
         המשתמש נתן תשובות מובנות: {json.dumps(answers, ensure_ascii=False)}.
-        בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד.
-        ודא שהדגמים מתאימים גם לקריטריונים וגם לרוח התיאור החופשי שסיפק המשתמש.
+        דגשים חופשיים: "{answers.get('free_description','')}".
+        
+        בחר עד 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד.
+        ודא שכל דגם בטווח התקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪ לפי מחירון יד2/לוי יצחק.
+        אם אין התאמות אמיתיות – החזר רשימה ריקה.
         החזר אך ורק JSON:
         {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}
         """
@@ -164,13 +175,16 @@ if user_text:
         except Exception:
             recs = {"recommendations":[]}
 
-        table_md = "| דגם | נימוק |\n|---|---|\n"
-        for r in recs.get("recommendations",[]):
-            table_md += f"| {r['model']} | {r['why']} |\n"
+        if recs.get("recommendations"):
+            table_md = "| דגם | נימוק |\n|---|---|\n"
+            for r in recs["recommendations"]:
+                table_md += f"| {r['model']} | {r['why']} |\n"
+        else:
+            table_md = "לא נמצאו רכבים מתאימים בתקציב ובדרישות שציינת."
 
         with st.chat_message("assistant"):
             st.markdown("### הצעות רכבים מתאימות\n" + table_md)
         st.session_state.messages.append({"role":"assistant","content":table_md})
 
 st.markdown("---")
-st.caption("האפליקציה מציגה שאלון מובנה, ולבסוף שואלת שאלה פתוחה על הדרישות. התיאור החופשי נכנס ישירות לפרומפט לחיפוש רכבים.")
+st.caption("האפליקציה מציגה שאלון מובנה, בסוף שואלת שאלה פתוחה, ואז מחפשת רכבים אמיתיים בישראל לפי התקציב והתיאור.")
