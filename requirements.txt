@@ -1,3 +1,5 @@
-streamlit>=1.33.0
-openai>=1.40.0
-google-generativeai>=0.7.2
+streamlit
+openai
+google-generativeai
+requests
+beautifulsoup4
