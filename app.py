@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
+# UsedCarAdvisor – Free-text enabled chatbot
 # Run: streamlit run app.py
 
 import os
@@ -7,7 +7,6 @@ import json
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-
 import streamlit as st
 
 try:
@@ -20,7 +19,7 @@ try:
 except Exception:
     genai = None
 
-st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט עם שאלון", page_icon="🤖🚗", layout="centered")
+st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט חכם", page_icon="🤖🚗", layout="centered")
 
 RTL = """
 <style>
@@ -38,52 +37,6 @@ if st.sidebar.button("🔄 התחל מחדש"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
-
-# =========================
-# Questionnaire slots
-# =========================
-@dataclass
-class Slot:
-    key: str
-    label: str
-    prompt: str
-    kind: str
-    required: bool = True
-
-SLOTS: List[Slot] = [
-    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40 אלף)", "int"),
-    Slot("budget_max", "תקציב מקסימום (₪)", "מה התקציב המקסימלי שלך בשקלים? (לדוגמה: 80 אלף)", "int"),
-    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (לדוגמה: משפחתי, קטן, ג'יפ)", "text"),
-    Slot("character", "אופי רכב", "האם אתה מחפש רכב ספורטיבי או יומיומי?", "text"),
-    Slot("usage", "שימוש עיקרי", "השימוש העיקרי יהיה בעיר, בין-עירוני או שטח?", "text"),
-    Slot("priority", "עדיפות מרכזית", "מה הכי חשוב לך – אמינות, נוחות, ביצועים או עיצוב?", "text"),
-    Slot("passengers", "מספר נוסעים ממוצע", "בממוצע כמה נוסעים ייסעו ברכב? (לדוגמה: 5)", "int"),
-    Slot("fuel", "סוג דלק", "איזה סוג דלק תעדיף – בנזין, דיזל, היברידי או חשמלי?", "text"),
-    Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה? (לדוגמה: 2015)", "int"),
-    Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה? (לדוגמה: 15 אלף)", "int"),
-    Slot("gearbox", "תיבת הילוכים", "יש לך העדפה לגיר – אוטומט או ידני?", "text"),
-    Slot("gearbox_type", "סוג תיבת אוטומט", "אם תבחר אוטומט – האם חשוב לך שתהיה תיבה רגילה (פלנטרית) או שזה לא משנה (רובוטית / CVT)?", "text", required=False),
-    Slot("region", "אזור בארץ", "באיזה אזור בארץ אתה גר?", "text"),
-    Slot("engine_size", "נפח מנוע", "מה נפח המנוע המועדף עליך? (לדוגמה: 1600)", "int"),
-    Slot("turbo", "טורבו", "האם אתה מחפש מנוע עם טורבו או בלי טורבו?", "text"),
-]
-REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
-
-allowed_brands = ["טויוטה","מאזדה","יונדאי","קיה","פולקסווגן","סקודה",
-"סוזוקי","מיצובישי","ניסאן","הונדה","פיג'ו","סיטרואן","רנו",
-"שברולט","פורד","סיאט","אופל"]
-
-# =========================
-# App state
-# =========================
-if "messages" not in st.session_state:
-    st.session_state.messages: List[Dict[str, str]] = [
-        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40 אלף)"}
-    ]
-if "answers" not in st.session_state:
-    st.session_state.answers: Dict[str, Any] = {}
-if "last_ask" not in st.session_state:
-    st.session_state.last_ask = None
 
 # =========================
 # Provider setup
@@ -108,35 +61,25 @@ else:
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
 # =========================
+# App state
+# =========================
+if "messages" not in st.session_state:
+    st.session_state.messages: List[Dict[str, str]] = [
+        {"role":"assistant","content":"היי! ספר לי במילים שלך איזה רכב אתה מחפש – אפשר חופשי (לדוגמה: 'בא לי חיית כביש איטלקית עד 80 אלף')."}
+    ]
+if "answers" not in st.session_state:
+    st.session_state.answers: Dict[str, Any] = {}
+
+# =========================
 # Helpers
 # =========================
-def parse_int(text: str) -> Optional[int]:
-    text = text.lower().replace(",", "").replace(" ", "")
-    if "אלף" in text:
-        nums = re.findall(r"\d+", text)
-        if nums:
-            return int(nums[0]) * 1000
-    nums = re.findall(r"\d+", text)
-    if nums:
-        try:
-            return int(nums[0])
-        except Exception:
-            return None
-    return None
-
-def next_missing_required() -> Optional[Slot]:
-    for s in SLOTS:
-        if s.required and (s.key not in st.session_state.answers or st.session_state.answers[s.key] in [None,"",0,""]):
-            return s
-    return None
-
 def call_model(prompt: str) -> str:
     try:
         if PROVIDER == "OpenAI" and has_key and oai_client:
             resp = oai_client.chat.completions.create(
                 model=model_name,
                 messages=[{"role":"user","content":prompt}],
-                temperature=0.3,
+                temperature=0.2,
             )
             return resp.choices[0].message.content
         elif PROVIDER == "Gemini" and has_key and gem_model:
@@ -146,67 +89,49 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
 
-def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=2) -> Dict[str,Any]:
-    results = []
-    for _ in range(repeats):
-        sub_prompt = f"""
-        בדוק עבור הדגם {model} (יד שנייה בישראל, מחירים והערכות בשקלים חדשים – ₪ בלבד).
-        ודא שהדגם מוצע בישראל במחיר התואם לתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪
-        (לפי מחירון לוי יצחק או אתר יד2). אם הדגם לא נכנס בתקציב, החזר "valid": false.
-        
-        החזר JSON:
-        {{
-          "model":"{model}",
-          "valid": true,
-          "reliability":88,
-          "annual_cost":{{
-             "insurance": 8500,
-             "fuel": 7500,
-             "maintenance": 3000,
-             "repairs": 2000,
-             "depreciation": 4000
-          }},
-          "issues":["גיר","מערכת חשמל"]
-        }}
-        """
-        txt = call_model(sub_prompt)
-        try:
-            data = json.loads(re.search(r"\{.*\}", txt, re.S).group())
-            results.append(data)
-        except Exception:
-            pass
+def interpret_free_text(user_text: str) -> Dict[str, Any]:
+    prompt = f"""
+    המשתמש כתב: "{user_text}"
+    עליך לנתח זאת לדרישות רכב.
+    השדות האפשריים:
+    - budget_min, budget_max (מספרים בשקלים אם צוין)
+    - body (משפחתי, האצ'בק, ג'יפ, סדאן, קופה...)
+    - character (ספורטיבי, יומיומי)
+    - fuel (בנזין, דיזל, היברידי, חשמלי)
+    - turbo (עם טורבו / בלי טורבו אם הוזכר)
+    - brand (מותג אם צוין, אחרת null)
+    - engine_size (נפח מנוע אם צוין, אחרת null)
 
-    if not results: 
-        return {"model":model,"valid":False,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":["נתון חסר"]}
+    החזר JSON בלבד. למשל:
+    {{
+      "budget_min": 40000,
+      "budget_max": 80000,
+      "body": "האצ'בק",
+      "character": "ספורטיבי",
+      "fuel": "בנזין",
+      "turbo": "עם טורבו",
+      "brand": "אלפא רומיאו",
+      "engine_size": 1700
+    }}
+    """
+    txt = call_model(prompt)
+    try:
+        data = json.loads(re.search(r"\{.*\}", txt, re.S).group())
+        return data
+    except Exception:
+        return {}
 
-    avg = {"model":model,"valid":True,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
-    n = len(results)
-    for r in results:
-        if r.get("valid", True) is False:
-            avg["valid"] = False
-        avg["reliability"] += r.get("reliability",0)
-        for k in avg["annual_cost"]:
-            avg["annual_cost"][k] += r.get("annual_cost",{}).get(k,0)
-        avg["issues"].extend(r.get("issues",[]))
-    avg["reliability"] = int(avg["reliability"]/max(1,n))
-    for k in avg["annual_cost"]:
-        avg["annual_cost"][k] = int(avg["annual_cost"][k]/max(1,n))
-    avg["issues"] = list(set(avg["issues"]))
-    return avg
-
-# =========================
-# Progress bar
-# =========================
 def progress_bar(answers: Dict[str,Any]):
-    filled = sum(1 for k in REQUIRED_KEYS if k in answers and answers[k] not in [None,"",0])
-    pct = int(100 * filled / max(1, len(REQUIRED_KEYS)))
+    required = ["budget_min","budget_max","body","character","fuel","year_min","engine_size","turbo"]
+    filled = sum(1 for k in required if k in answers and answers[k] not in [None,"",0])
+    pct = int(100 * filled / len(required))
     st.markdown(f"**התקדמות השאלון:** {pct}%")
     st.progress(pct)
 
 # =========================
-# Display history + Progress
+# Display history
 # =========================
-st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון")
+st.markdown("## 🤖 יועץ רכבים – צ'אט חכם")
 progress_bar(st.session_state.answers)
 
 for m in st.session_state.messages:
@@ -216,91 +141,50 @@ for m in st.session_state.messages:
 # =========================
 # Chat input
 # =========================
-user_text = st.chat_input("כתוב תשובה כאן והקש אנטר...")
+user_text = st.chat_input("כתוב בחופשיות מה אתה מחפש...")
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
-    if st.session_state.get("last_ask"):
-        slot = st.session_state.last_ask
-        if slot.kind == "int":
-            val = parse_int(user_text)
-            if val: st.session_state.answers[slot.key] = val
-        else:
-            st.session_state.answers[slot.key] = user_text.strip()
-        st.session_state.last_ask = None
+    parsed = interpret_free_text(user_text)
+    st.session_state.answers.update({k:v for k,v in parsed.items() if v not in [None,"",0]})
 
-    nxt = next_missing_required()
-    if nxt:
-        st.session_state.last_ask = nxt
-        with st.chat_message("assistant"):
-            st.markdown(nxt.prompt)
-        st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
-    else:
-        answers = st.session_state.answers
+    # סיכום דרישות עד כה
+    answers = st.session_state.answers
+    summary_lines = []
+    for k,v in answers.items():
+        summary_lines.append(f"- {k}: {v}")
+    summary_text = "### סיכום דרישותיך (עד כה)\n" + "\n".join(summary_lines)
+    with st.chat_message("assistant"):
+        st.markdown(summary_text)
+    st.session_state.messages.append({"role":"assistant","content":summary_text})
 
-        # סיכום דרישות
-        summary_lines = []
-        for s in SLOTS:
-            val = answers.get(s.key)
-            if val not in [None,"",0]:
-                summary_lines.append(f"- {s.label}: {val}")
-        summary_text = "### סיכום דרישותיך\n" + "\n".join(summary_lines)
-        with st.chat_message("assistant"):
-            st.markdown(summary_text)
-        st.session_state.messages.append({"role":"assistant","content":summary_text})
-
+    # אם מולאו נתונים מספיקים → חיפוש דגמים
+    if "budget_max" in answers and "body" in answers:
         with st.chat_message("assistant"):
             st.markdown("✅ מחפש רכבים מתאימים בישראל...")
 
-        prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
-בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד (יבוא סדיר או מקביל).
-ודא שכל דגם נכנס בתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪ לפי מחירון ישראלי.
-החזר JSON:
-{{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
+        prompt = f"""
+        בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
+        בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד.
+        אם המשתמש ביקש טורבו – אל תחזיר דגמים בלי טורבו.
+        אם המשתמש ציין מותג (brand) – החזר רק דגמים של מותג זה.
+        החזר JSON:
+        {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}
+        """
         txt = call_model(prompt)
         try:
             recs = json.loads(re.search(r"\{.*\}", txt, re.S).group())
         except Exception:
             recs = {"recommendations":[]}
 
-        filtered = []
-        for r in recs.get("recommendations",[]):
-            if any(brand in r["model"] for brand in allowed_brands):
-                filtered.append(r)
-        if not filtered:
-            filtered = [{"model":"טויוטה קורולה","why":"אמינה מאוד ובשוק הישראלי"},
-                        {"model":"מאזדה 3","why":"פופולרית ושמירת ערך"},
-                        {"model":"יונדאי i30","why":"נפוצה מאוד"},
-                        {"model":"קיה סיד","why":"משפחתית חסכונית"},
-                        {"model":"סקודה אוקטביה","why":"מרווחת ופופולרית בציים"}]
-
-        all_models = [r["model"] for r in filtered]
-
-        results = []
-        progress = st.progress(0)
-        for i, model in enumerate(all_models):
-            with st.spinner(f"בודק אמינות ועלויות עבור {model}..."):
-                res = check_model_reliability(model, answers, repeats=2)
-                if res.get("valid", True):
-                    results.append(res)
-            progress.progress(int((i+1)/len(all_models)*100))
-
-        # טבלה
-        table_md = "| דגם | אמינות | ביטוח | דלק | תחזוקה | תיקונים | ירידת ערך | סה\"כ | תקלות |\n|---|---|---|---|---|---|---|---|---|\n"
-        best_model = None
-        best_total = 10**9
-        for r in results:
-            ac = r["annual_cost"]
-            total = sum(ac.values())
-            if total < best_total:
-                best_total = total
-                best_model = r["model"]
-            table_md += f"| {r['model']} | {r['reliability']} | {ac['insurance']} | {ac['fuel']} | {ac['maintenance']} | {ac['repairs']} | {ac['depreciation']} | {total} | {', '.join(r['issues'])} |\n"
-
-        final_msg = "### תוצאות בדיקת אמינות ותחזוקה\n" + table_md + f"\n✅ ההמלצה המובילה: **{best_model}**"
-        with st.chat_message("assistant"):
-            st.markdown(final_msg)
-        st.session_state.messages.append({"role":"assistant","content":final_msg})
+        # טבלה ראשונית
+        if recs.get("recommendations"):
+            table_md = "| דגם | נימוק |\n|---|---|\n"
+            for r in recs["recommendations"]:
+                table_md += f"| {r['model']} | {r['why']} |\n"
+            with st.chat_message("assistant"):
+                st.markdown("### הצעות ראשוניות\n" + table_md)
+            st.session_state.messages.append({"role":"assistant","content":table_md})
 
 st.markdown("---")
-st.caption("האפליקציה כוללת כפתור התחלה מחדש, מדד התקדמות לשאלון, Spinner ו-Progress bar בזמן חישוב, ובודקת התאמה לתקציב לפי מחירון ישראלי.")
+st.caption("האפליקציה מקבלת טקסט חופשי מהמשתמש, מפענחת לשדות מובנים (כולל מותג אם צוין), ומחזירה המלצות רלוונטיות בלבד.")
