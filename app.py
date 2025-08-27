@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# UsedCarAdvisor – Structured Questionnaire + Free-text input
+# UsedCarAdvisor – Structured Questionnaire + Free-text + Final Flexible Description
 # Run: streamlit run app.py
 
 import os, json, re
@@ -17,7 +17,7 @@ try:
 except Exception:
     genai = None
 
-st.set_page_config(page_title="יועץ רכבים יד 2 – שאלון + חופשי", page_icon="🤖🚗", layout="centered")
+st.set_page_config(page_title="יועץ רכבים יד 2 – עם תיאור חופשי", page_icon="🤖🚗", layout="centered")
 
 RTL = """
 <style>
@@ -54,10 +54,10 @@ else:
 
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
-# מצבים
+# מצב אפליקציה
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role":"assistant","content":"היי! נתחיל בשאלון, אבל אפשר גם לכתוב חופשי (למשל: 'בא לי חיית כביש איטלקית עם טורבו עד 80 אלף')."}
+        {"role":"assistant","content":"היי! נתחיל בשאלון, ובסוף תהיה לך גם אפשרות לכתוב תיאור חופשי של הדרישות."}
     ]
 if "answers" not in st.session_state:
     st.session_state.answers = {}
@@ -76,12 +76,16 @@ class Slot:
 SLOTS: List[Slot] = [
     Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים?", "int"),
     Slot("budget_max", "תקציב מקסימום (₪)", "ומה המקסימום שאתה מוכן לשלם?", "int"),
-    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (משפחתי, האצ'בק, ג'יפ...)", "text"),
+    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (משפחתי, האצ'בק, ג'יפ, סדאן...)", "text"),
     Slot("character", "אופי רכב", "העדפה: ספורטיבי או יומיומי?", "text"),
     Slot("fuel", "סוג דלק", "איזה סוג דלק תעדיף – בנזין, דיזל, היברידי, חשמלי?", "text"),
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
     Slot("engine_size", "נפח מנוע", "איזה נפח מנוע בערך מתאים לך? (למשל 1600)", "int"),
     Slot("turbo", "טורבו", "האם חשוב לך טורבו?", "text"),
+    # שדה סופי – תיאור חופשי
+    Slot("free_description", "תיאור חופשי של הדרישות",
+         "ולבסוף, ספר במילים חופשיות מה חשוב לך ברכב (לדוגמה: 'אני רוצה רכב חסכוני, שלא יקר בתחזוקה ושייראה צעיר').",
+         "text", required=False)
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
@@ -102,29 +106,9 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return ""
 
-def interpret_free_text(user_text: str) -> Dict[str, Any]:
-    prompt = f"""
-    המשתמש כתב: "{user_text}"
-    נתח זאת לדרישות רכב:
-    - budget_min, budget_max (מספרים בשקלים אם יש)
-    - body (משפחתי, האצ'בק, ג'יפ, סדאן...)
-    - character (ספורטיבי, יומיומי)
-    - fuel (בנזין, דיזל, היברידי, חשמלי)
-    - turbo (עם טורבו / בלי טורבו)
-    - brand (מותג אם צוין, אחרת null)
-    - engine_size (נפח מנוע אם צוין)
-
-    החזר JSON בלבד.
-    """
-    txt = call_model(prompt)
-    try:
-        return json.loads(re.search(r"\{.*\}", txt, re.S).group())
-    except Exception:
-        return {}
-
 def next_missing_required():
     for s in SLOTS:
-        if s.key not in st.session_state.answers:
+        if s.required and s.key not in st.session_state.answers:
             return s
     return None
 
@@ -135,7 +119,7 @@ def progress_bar(answers: Dict[str,Any]):
     st.progress(pct)
 
 # הצגת צ'אט
-st.markdown("## 🤖 יועץ רכבים – שאלון + טקסט חופשי")
+st.markdown("## 🤖 יועץ רכבים – שאלון + תיאור חופשי")
 progress_bar(st.session_state.answers)
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
@@ -151,12 +135,6 @@ if user_text:
         st.session_state.answers[st.session_state.last_ask.key] = user_text.strip()
         st.session_state.last_ask = None
 
-    # ניתוח טקסט חופשי → הכנסת ערכים
-    parsed = interpret_free_text(user_text)
-    for k,v in parsed.items():
-        if v not in [None,"",0,"null"]:
-            st.session_state.answers[k] = v
-
     # אם עדיין חסרים שדות → המשך שאלון
     nxt = next_missing_required()
     if nxt:
@@ -167,18 +145,17 @@ if user_text:
     else:
         # הכל מולא → סיכום דרישות + פרומפט חיפוש
         answers = st.session_state.answers
-        summary = "### סיכום דרישותיך\n" + "\n".join([f"- {k}: {v}" for k,v in answers.items()])
+        summary = "### סיכום דרישותיך\n" + "\n".join([f"- {s.label}: {answers.get(s.key)}" for s in SLOTS if answers.get(s.key)])
         with st.chat_message("assistant"):
             st.markdown(summary)
         st.session_state.messages.append({"role":"assistant","content":summary})
 
-        # חיפוש רכבים
+        # פרומפט חיפוש – כולל גם את התיאור החופשי
         search_prompt = f"""
-        בהתבסס על הדרישות: {json.dumps(answers, ensure_ascii=False)},
+        המשתמש נתן תשובות מובנות: {json.dumps(answers, ensure_ascii=False)}.
         בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד.
-        אם המשתמש ביקש טורבו – אל תציע דגם בלי טורבו.
-        אם ציין מותג – כלול רק דגמים מאותו מותג.
-        החזר JSON:
+        ודא שהדגמים מתאימים גם לקריטריונים וגם לרוח התיאור החופשי שסיפק המשתמש.
+        החזר אך ורק JSON:
         {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}
         """
         txt = call_model(search_prompt)
@@ -196,4 +173,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":table_md})
 
 st.markdown("---")
-st.caption("האפליקציה משלבת שאלון מובנה + הבנת טקסט חופשי. התשובות החופשיות מוזרקות לפרומפט כדי לחדד את ההמלצות.")
+st.caption("האפליקציה מציגה שאלון מובנה, ולבסוף שואלת שאלה פתוחה על הדרישות. התיאור החופשי נכנס ישירות לפרומפט לחיפוש רכבים.")
