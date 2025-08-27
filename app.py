@@ -1,3 +1,4 @@
+
 import os
 import json
 import re
@@ -6,14 +7,13 @@ from typing import List, Dict, Any, Optional
 
 import streamlit as st
 
-# Optional SDKs – install according to chosen provider
 try:
-    from openai import OpenAI  # pip install openai>=1.40.0
+    from openai import OpenAI
 except Exception:
     OpenAI = None
 
 try:
-    import google.generativeai as genai  # pip install google-generativeai
+    import google.generativeai as genai
 except Exception:
     genai = None
 
@@ -35,15 +35,12 @@ hr{border:none;border-top:1px solid #eee;margin:.7rem 0}
 """
 st.markdown(RTL, unsafe_allow_html=True)
 
-# =========================
-# Domain: Questionnaire Slots
-# =========================
 @dataclass
 class Slot:
     key: str
     label: str
     prompt: str
-    kind: str  # 'select'|'int'|'text'
+    kind: str
     required: bool = True
     options: Optional[List[str]] = None
 
@@ -67,29 +64,20 @@ SLOTS: List[Slot] = [
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
-# =========================
-# App State
-# =========================
 if "messages" not in st.session_state:
     st.session_state.messages: List[Dict[str, str]] = [
         {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה טווח התקציב שלך? (אפשר לכתוב חופשי או לבחור בפתקיות כאן למטה)"}
     ]
 if "answers" not in st.session_state:
     st.session_state.answers: Dict[str, Any] = {}
-if "ask_index" not in st.session_state:
-    st.session_state.ask_index = 0
 if "last_ask" not in st.session_state:
     st.session_state.last_ask = None
 if "_clicked_choice" not in st.session_state:
     st.session_state._clicked_choice = None
 
-# =========================
-# Providers & status
-# =========================
 PROVIDER = st.sidebar.selectbox("ספק מודל", ["OpenAI", "Gemini"], index=0)
-
 openai_key = os.getenv("OPENAI_API_KEY", "")
-gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")  # accept both names
+gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
 
 if PROVIDER == "OpenAI":
     has_key = bool(openai_key and OpenAI)
@@ -106,55 +94,6 @@ else:
 
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
-# =========================
-# Small helpers (normalization & coercion)
-# =========================
-def _norm(s: str) -> str:
-    s = s or ""
-    s = s.replace("״", '"').replace("”", '"').replace("“", '"').replace("׳","'").replace("’","'").replace("־","-")
-    s = s.replace("ג׳יפ", "ג'יפ")
-    return re.sub(r"\s+", " ", s.strip())
-
-def coerce_for_slot(slot: Slot, text: str) -> Any:
-    t = _norm(text)
-    if slot.kind == "int":
-        nums = re.findall(r"\d+", t.replace(",", ""))
-        if nums:
-            try:
-                return int(nums[0])
-            except Exception:
-                return None
-        return None
-    if slot.kind == "select" and slot.options:
-        tn = t.lower()
-        if slot.key == "fuel" and "בנזין" in tn:
-            return "בנזין"
-        for opt in slot.options:
-            if _norm(opt).lower() in tn or tn in _norm(opt).lower():
-                return opt
-        for opt in slot.options:
-            if _norm(opt)[0] == t[:1]:
-                return opt
-        return t
-    return t if t else None
-
-def parse_budget_range(text: str) -> Optional[Dict[str,int]]:
-    t = text.replace(",", "")
-    nums = [int(n) for n in re.findall(r"\d+", t)]
-    if len(nums) >= 2:
-        lo, hi = sorted(nums[:2])
-        return {"budget_min": lo, "budget_max": hi}
-    return None
-
-def next_missing_required() -> Optional[Slot]:
-    for s in SLOTS:
-        if s.required and (s.key not in st.session_state.answers or st.session_state.answers[s.key] in [None,"",0]):
-            return s
-    return None
-
-# =========================
-# LLM call
-# =========================
 SYSTEM_PROMPT = {
     "role":"system",
     "content":(
@@ -191,10 +130,9 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
             r = gem_model.generate_content(as_text)
             txt = r.text or ""
         else:
-            txt = '{"assistant_message": "(אין חיבור לספק – מצב מקומי)", "filled_slots": {}, "ask_next": null}'
+            txt = '{"assistant_message": "(אין חיבור לספק)", "filled_slots": {}, "ask_next": null}'
     except Exception:
-        txt = '{"assistant_message": "(שגיאה אצל הספק – מצב מקומי)", "filled_slots": {}, "ask_next": null}'
-
+        txt = '{"assistant_message": "(שגיאה אצל הספק)", "filled_slots": {}, "ask_next": null}'
     try:
         m = re.search(r"\{[\s\S]*\}$", txt.strip())
         payload = json.loads(m.group(0) if m else txt)
@@ -204,9 +142,6 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
     except Exception:
         return {"assistant_message":"", "filled_slots":{}, "ask_next":None}
 
-# =========================
-# UI helpers
-# =========================
 def render_quick_replies(options: List[str]):
     if not options:
         return None
@@ -224,9 +159,6 @@ def progress_bar(answers: Dict[str,Any]):
     st.markdown(f"**התקדמות השאלון:** {pct}%")
     st.markdown(f"<div class='progress'><div style='width:{pct}%'></div></div>", unsafe_allow_html=True)
 
-# =========================
-# Display history
-# =========================
 st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון מובנה")
 progress_bar(st.session_state.answers)
 
@@ -234,12 +166,8 @@ for m in st.session_state.messages:
     with st.chat_message("assistant" if m["role"]=="assistant" else "user"):
         st.markdown(m["content"])
 
-# =========================
-# In-chat questionnaire turn
-# =========================
 user_text = st.chat_input("כתוב תשובה חופשית… או בחר אפשרות כאשר תוצג מעל אינפוט זה")
 
-# Handle quick-reply clicks BEFORE sending anything to the model
 clicked_choice = st.session_state.get("_clicked_choice")
 if clicked_choice:
     last_ask = st.session_state.get("last_ask")
@@ -248,123 +176,75 @@ if clicked_choice:
         st.session_state.messages.append({"role":"user","content":clicked_choice})
         st.session_state._clicked_choice = None
         st.session_state.last_ask = None
-        user_text = None
+        user_text = clicked_choice
     else:
         user_text = clicked_choice
         st.session_state._clicked_choice = None
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
+    ctx = build_chat_for_llm(st.session_state.messages, st.session_state.answers)
+    payload = call_llm(ctx)
 
-    # Bind free-text to the last asked slot in ALL modes (prevents loops)
-    if st.session_state.get("last_ask") and st.session_state.last_ask.get("key"):
-        key = st.session_state.last_ask["key"]
-        slot = next((s for s in SLOTS if s.key == key), None)
-        if slot:
-            val = coerce_for_slot(slot, user_text or "")
-            if val not in [None, ""]:
-                st.session_state.answers[key] = val
-        st.session_state.last_ask = None
+    filled_slots = payload.get("filled_slots") or {}
+    if isinstance(filled_slots, dict):
+        for k, v in list(filled_slots.items()):
+            if k in ["budget_min","budget_max","passengers","km_per_year","year_min"]:
+                try:
+                    filled_slots[k] = int(str(v).replace(",",""))
+                except Exception:
+                    pass
+        st.session_state.answers.update({k: v for k, v in filled_slots.items() if v not in [None, ""]})
 
-    # Try infer budget range from any free text
-    rng = parse_budget_range(user_text or "")
-    if rng:
-        st.session_state.answers.setdefault("budget_min", rng["budget_min"])
-        st.session_state.answers.setdefault("budget_max", rng["budget_max"])
-
-    # LLM path (if connected), else local logic
-    if has_key:
-        ctx = build_chat_for_llm(st.session_state.messages, st.session_state.answers)
-        payload = call_llm(ctx)
-
-        filled_slots = payload.get("filled_slots") or {}
-        if isinstance(filled_slots, dict):
-            for k, v in list(filled_slots.items()):
-                if k in ["budget_min","budget_max","passengers","km_per_year","year_min"]:
-                    try:
-                        filled_slots[k] = int(str(v).replace(",",""))
-                    except Exception:
-                        pass
-            st.session_state.answers.update({k: v for k, v in filled_slots.items() if v not in [None, ""]})
-
-        assistant_message = payload.get("assistant_message") or "קיבלתי. נמשיך."
-
-        ask_next = payload.get("ask_next")
-        # Guard: if model asks again for a field already filled, skip to next missing
-        if ask_next and isinstance(ask_next, dict):
-            next_key = ask_next.get("key")
-            if next_key and next_key in st.session_state.answers and st.session_state.answers[next_key] not in [None,"",0]:
-                ask_next = None
-
-        if ask_next and isinstance(ask_next, dict):
-            q = ask_next.get("question") or "שאלה הבאה:"
-            opts = ask_next.get("options", [])
-            st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
-            with st.chat_message("assistant"):
-                st.markdown(assistant_message + f"\n\n**{q}**")
-                choice = render_quick_replies(opts)
-                if choice:
-                    st.session_state._clicked_choice = choice
-            st.session_state.messages.append({"role":"assistant","content":assistant_message + ("\n\n" + q if q else "")})
-        else:
-            missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
-            if missing:
-                nxt = missing[0]
-                st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
-                with st.chat_message("assistant"):
-                    st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
-                    choice = render_quick_replies(nxt.options or [])
-                    if choice:
-                        st.session_state._clicked_choice = choice
-                st.session_state.messages.append({"role":"assistant","content":assistant_message + "\n\n" + nxt.prompt})
-            else:
-                shortlist = [
-                    "טויוטה קורולה היברידית",
-                    "מאזדה 3",
-                    "קיה ספורטאז'",
-                    "יונדאי טוסון",
-                    "טויוטה יאריס היברידית",
-                ]
-                bullet = "\n".join([f"• {x}" for x in shortlist])
-                summ = (
-                    "סיימנו לאסוף נתונים! הנה 5 דגמים מתאימים להתחלה (MVP):\n\n" + bullet +
-                    "\n\nתרצה לעבור לשלב 'מודעה ספציפית' כדי לחשב ציון כדאיות 0–100?"
-                )
-                with st.chat_message("assistant"):
-                    st.markdown(summ)
-                st.session_state.messages.append({"role":"assistant","content":summ})
+    assistant_message = payload.get("assistant_message") or "קיבלתי. נמשיך."
+    ask_next = payload.get("ask_next")
+    if ask_next and isinstance(ask_next, dict):
+        q = ask_next.get("question") or "שאלה הבאה:"
+        opts = ask_next.get("options", [])
+        st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
+        with st.chat_message("assistant"):
+            st.markdown(assistant_message + f"\n\n**{q}**")
+            choice = render_quick_replies(opts)
+            if choice:
+                st.session_state._clicked_choice = choice
+        st.session_state.messages.append({"role":"assistant","content":assistant_message + ("\n\n" + q if q else "")})
     else:
-        # Local (no provider) – ask next missing or finish
         missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
         if missing:
             nxt = missing[0]
             st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
             with st.chat_message("assistant"):
-                st.markdown("תודה!\n\n**" + nxt.prompt + "**")
+                st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
                 choice = render_quick_replies(nxt.options or [])
                 if choice:
                     st.session_state._clicked_choice = choice
-            st.session_state.messages.append({"role":"assistant","content":"תודה!\n\n" + nxt.prompt})
+            st.session_state.messages.append({"role":"assistant","content":assistant_message + "\n\n" + nxt.prompt})
         else:
-            shortlist = [
-                "טויוטה קורולה היברידית",
-                "מאזדה 3",
-                "קיה ספורטאז'",
-                "יונדאי טוסון",
-                "טויוטה יאריס היברידית",
-            ]
-            bullet = "\n".join([f"• {x}" for x in shortlist])
-            summ = (
-                "סיימנו לאסוף נתונים! הנה 5 דגמים מתאימים להתחלה (MVP):\n\n" + bullet +
-                "\n\nתרצה לעבור לשלב 'מודעה ספציפית' כדי לחשב ציון כדאיות 0–100?"
-            )
+            # --- Final recommendations prompt ---
+            final_instruction = {
+                "role": "system",
+                "content": (
+                    "בהתבסס על השדות שנאספו במילון 'מצב שדות נוכחי', "
+                    "החזר JSON תקין בלבד במבנה: "
+                    '{"assistant_message": "תקציר קצר", '
+                    '"recommendations": [{"model":"שם דגם","why":"נימוק קצר בעברית"}], '
+                    '"next_step":"שאלה קצרה להמשך"}'
+                )
+            }
+            final_ctx = [final_instruction]
+            final_ctx.extend(build_chat_for_llm(st.session_state.messages, st.session_state.answers))
+            final_payload = call_llm(final_ctx)
+
+            recs = (final_payload or {}).get("recommendations") or []
+            assistant_message = (final_payload or {}).get("assistant_message") or "סיימנו לאסוף נתונים!"
+            next_step = (final_payload or {}).get("next_step") or "תרצה לעבור לשלב 'מודעה ספציפית'?"
+
+            bullet = "\n".join([f"• {r.get('model','?')} – {r.get('why','')}" for r in recs]) if recs else "• אין המלצות זמינות"
+            summ = assistant_message + "\n\n" + bullet + "\n\n" + next_step
             with st.chat_message("assistant"):
                 st.markdown(summ)
             st.session_state.messages.append({"role":"assistant","content":summ})
 
-# =========================
-# Footer / Next steps
-# =========================
 st.markdown("---")
 st.caption("""גרסת MVP: שאלון מוטמע בצ'אט + בחירת ספק מודל (OpenAI/Gemini).
-בהמשך: ניקוד מתקדם, בדיקת אמינות, ויצוא PDF.""")
+בסיום השאלון מופעלות המלצות חכמות מהמודל.""")
