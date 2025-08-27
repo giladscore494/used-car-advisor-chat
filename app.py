@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
 # UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
 # Run: streamlit run app.py
-# Set API keys via env or Streamlit secrets:
-#   OPENAI_API_KEY / GEMINI_API_KEY
+# Env vars required (pick one provider or both):
+#   OPENAI_API_KEY=...
+#   GEMINI_API_KEY=...
+#
+# Notes:
+# - The questionnaire lives INSIDE the chat. The assistant asks one concise
+#   question at a time, proposes quick-reply options, and accepts free text.
+# - Responses are generated through your selected provider: OpenAI or Gemini.
+# - The app guides the user to a 5-model shortlist, then can switch to
+#   “specific ad scoring” in a follow-up step (placeholders included).
 
 import os
 import json
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 
 import streamlit as st
 
-# Optional SDKs – installed via requirements.txt
+# Optional SDKs – install according to chosen provider
 try:
     from openai import OpenAI  # pip install openai>=1.40.0
 except Exception:
@@ -23,9 +32,6 @@ try:
 except Exception:
     genai = None
 
-# -----------------------
-# Page setup + RTL styles
-# -----------------------
 st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט עם שאלון מוטמע", page_icon="🤖🚗", layout="centered")
 
 RTL = """
@@ -68,7 +74,7 @@ SLOTS: List[Slot] = [
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
     Slot("parking", "חניה", "יש לך חניה פרטית או חניה ברחוב?", "select", options=["פרטית","רחוב"]),
     Slot("fuel_importance", "חשיבות צריכת דלק", "כמה חשובה לך צריכת דלק – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("km_per_year", 'ק"מ לשנה', "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
+    Slot("km_per_year", "ק""מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
     Slot("tax_importance", "חשיבות אגרת טסט", "עד כמה חשובה עלות אגרת הרישוי – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("ins_importance", "חשיבות ביטוח", "עד כמה חשובה עלות הביטוח – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("gearbox", "תיבת הילוכים (לא חובה)", "יש לך העדפה לגיר – אוטומט או ידני?", "select", required=False, options=["לא משנה","אוטומט","ידני"]),
@@ -81,70 +87,67 @@ REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 # =========================
 if "messages" not in st.session_state:
     st.session_state.messages: List[Dict[str, str]] = [
-        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה טווח התקציב שלך? (אפשר לכתוב חופשי או לבחור כשאציג אפשרויות)"}
+        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה טווח התקציב שלך? (אפשר לכתוב חופשי או לבחור בפתקיות כאן למטה)"}
     ]
 if "answers" not in st.session_state:
     st.session_state.answers: Dict[str, Any] = {}
 if "ask_index" not in st.session_state:
     st.session_state.ask_index = 0  # which slot to ask next (by order)
+# add quick-reply state binders
 if "last_ask" not in st.session_state:
     st.session_state.last_ask = None
 if "_clicked_choice" not in st.session_state:
     st.session_state._clicked_choice = None
 
 # =========================
-# Provider selection + keys
+# LLM adapters
 # =========================
-st.sidebar.header("⚙️ הגדרות מודל")
 PROVIDER = st.sidebar.selectbox("ספק מודל", ["OpenAI", "Gemini"], index=0)
-
-# Prefer st.secrets for deployment; fallback to env vars
-openai_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-gemini_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-
 if PROVIDER == "OpenAI":
-    model_name = st.sidebar.text_input("OpenAI Model", value="gpt-4.1-mini")
+    openai_key = os.getenv("OPENAI_API_KEY", "")
     if openai_key and OpenAI:
         oai_client = OpenAI(api_key=openai_key)
     else:
         oai_client = None
+    model_name = st.sidebar.text_input("OpenAI Model", value="gpt-4.1-mini")
 else:
-    model_name = st.sidebar.text_input("Gemini Model", value="gemini-1.5-flash")
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
     if gemini_key and genai:
         genai.configure(api_key=gemini_key)
-        gem_model = genai.GenerativeModel(model_name)
+        gem_model = genai.GenerativeModel("gemini-1.5-flash")
     else:
         gem_model = None
+    model_name = st.sidebar.text_input("Gemini Model", value="gemini-1.5-flash")
 
-# =========================
-# System prompts for JSON control
-# =========================
 SYSTEM_PROMPT = {
     "role":"system",
     "content":(
-        "אתה עוזר קניות רכב יד 2 בעברית. תשאל שאלה אחת קצרה בכל פעם, הצע 3–6 אפשרויות קצרות ככפתורי בחירה, "
-        "וגם קבל תשובה חופשית. עדכן מילון JSON בשם filled_slots כשנמסרים ערכים, ובחר את השדה הבא שנדרש. "
-        "החזר תמיד JSON חוקי בלבד (ולא טקסט נוסף) במבנה הבא."
-    )
+        "אתה עוזר קניות רכב יד 2 בעברית. תשאל שאלה אחת קצרה בכל פעם, הצע 3–6 אפשרויות קצרות ככפתורי בחירה,"
+        " וגם קבל תשובה חופשית. עדכן מילון JSON בשם filled_slots כשנמסרים ערכים, ובחר את השדה הבא שנדרש."
+        " תמיד החזר בפורמט JSON תקין:")
 }
 FORMAT_HINT = {
     "role":"system",
     "content":(
-        '{"assistant_message": "טקסט לבן-אדם", '
-        '"filled_slots": {"budget_min": 40000, "body": "משפחתי"}, '
-        '"ask_next": {"key": "fuel", "question": "איזה סוג דלק תעדיף?", "options": ["בנזין","דיזל","היברידי","חשמלי","כל"]}}'
-    )
+        '{"assistant_message": "טקסט לבן-אדם",'
+        ' "filled_slots": {"budget_min": 40000, "body": "משפחתי"},'
+        ' "ask_next": {"key": "fuel", "question": "איזה סוג דלק תעדיף?", "options": ["בנזין","דיזל","היברידי","חשמלי","כל"]}}')
 }
+
+# Compose minimal context for the model
 
 def build_chat_for_llm(messages: List[Dict[str,str]], answers: Dict[str,Any]) -> List[Dict[str,str]]:
     ctx = [SYSTEM_PROMPT, FORMAT_HINT]
+    # Include a compact state summary
     state_line = json.dumps({k: v for k, v in answers.items()}, ensure_ascii=False)
     ctx.append({"role":"system", "content": f"מצב שדות נוכחי: {state_line}"})
+    # recent messages (last 8 for brevity)
     ctx.extend(messages[-8:])
     return ctx
 
+
 def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
-    """Call provider and parse JSON dict. Fallback to a safe default if parsing fails."""
+    """Call the chosen provider and parse a JSON dict. Fallback to a safe default if parsing fails."""
     try:
         if PROVIDER == "OpenAI" and oai_client is not None:
             resp = oai_client.chat.completions.create(
@@ -154,18 +157,20 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
             )
             txt = resp.choices[0].message.content
         elif PROVIDER == "Gemini" and gem_model is not None:
-            as_text = "\n".join([f"{m['role']}: {m['content']}" for m in context_msgs])
+            # Gemini expects a single string; we concatenate
+            as_text = "
+".join([f"{m['role']}: {m['content']}" for m in context_msgs])
             r = gem_model.generate_content(as_text)
             txt = r.text
         else:
             # No API key → start from budget_min with buttons
             txt = '{"assistant_message": "(אין מפתח API מוגדר. אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
-    except Exception:
+    except Exception as e:
         txt = '{"assistant_message": "(שגיאה זמנית בתשובה, אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
 
-    # Extract JSON
+    # Try to extract JSON from txt
     try:
-        # If model returned extra text around JSON, extract from first '{' to last '}'
+        # If model returned extra text around JSON, extract first {...}
         m = re.search(r"\{[\s\S]*\}$", txt.strip())
         payload = json.loads(m.group(0) if m else txt)
         if not isinstance(payload, dict):
@@ -173,14 +178,15 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
         return payload
     except Exception:
         return {
-            "assistant_message": "קיבלתי. נמשיך בבקשה עם השאלון.",
+            "assistant_message": "קיבלתי. נמשיך בבקשה עם השאלון. מה סוג הרכב? קטן / משפחתי / ג'יפ / מסחרי קל",
             "filled_slots": {},
-            "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}
+            "ask_next": {"key":"body","question":"מה סוג הרכב?","options":["קטן","משפחתי","ג'יפ","מסחרי קל"]}
         }
 
-# -----------------------
-# UI helpers
-# -----------------------
+# =========================
+# Helper UI
+# =========================
+
 def render_quick_replies(options: List[str]):
     cols = st.columns(min(3, len(options))) if options else []
     clicks = None
@@ -190,15 +196,16 @@ def render_quick_replies(options: List[str]):
                 clicks = opt
     return clicks
 
+
 def progress_bar(answers: Dict[str,Any]):
     filled = sum(1 for k in REQUIRED_KEYS if k in answers and answers[k] not in [None, "", 0])
     pct = int(100 * filled / max(1, len(REQUIRED_KEYS)))
     st.markdown(f"**התקדמות השאלון:** {pct}%")
     st.markdown(f"<div class='progress'><div style='width:{pct}%'></div></div>", unsafe_allow_html=True)
 
-# -----------------------
-# Header + history
-# -----------------------
+# =========================
+# Display history
+# =========================
 st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון מובנה")
 progress_bar(st.session_state.answers)
 
@@ -206,9 +213,9 @@ for m in st.session_state.messages:
     with st.chat_message("assistant" if m["role"]=="assistant" else "user"):
         st.markdown(m["content"])
 
-# -----------------------
-# Chat turn (with proper quick-reply binding)
-# -----------------------
+# =========================
+# In-chat questionnaire turn
+# =========================
 user_text = st.chat_input("כתוב תשובה חופשית… או בחר אפשרות כאשר תוצג מעל אינפוט זה")
 
 # Handle quick-reply clicks BEFORE sending anything to the model
@@ -216,26 +223,28 @@ clicked_choice = st.session_state.get("_clicked_choice")
 if clicked_choice:
     last_ask = st.session_state.get("last_ask")
     if last_ask and isinstance(last_ask, dict) and last_ask.get("key"):
-        # Bind the clicked option to the last asked slot
+        # Bind the clicked option directly to the last asked slot
         st.session_state.answers[last_ask["key"]] = clicked_choice
         st.session_state.messages.append({"role":"user","content":clicked_choice})
         st.session_state._clicked_choice = None
         st.session_state.last_ask = None
-        user_text = None  # already handled this turn
+        user_text = None  # already handled
     else:
-        # Fallback: treat as plain text
+        # Fallback: treat the click as plain text
         user_text = clicked_choice
         st.session_state._clicked_choice = None
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
 
+    # Ask LLM what to do next
     ctx = build_chat_for_llm(st.session_state.messages, st.session_state.answers)
     payload = call_llm(ctx)
 
-    # Merge any filled slots
+    # 1) Merge any filled slots
     filled_slots = payload.get("filled_slots") or {}
     if isinstance(filled_slots, dict):
+        # normalize numerics if strings
         for k, v in list(filled_slots.items()):
             if k in ["budget_min","budget_max","passengers","km_per_year","year_min"]:
                 try:
@@ -244,29 +253,37 @@ if user_text:
                     pass
         st.session_state.answers.update({k: v for k, v in filled_slots.items() if v not in [None, ""]})
 
+    # 2) Compose assistant message
     assistant_message = payload.get("assistant_message") or "קיבלתי. נמשיך."
 
-    # Ask next with quick replies
-    ask_next = payload.get("ask_next")
-    if ask_next and isinstance(ask_next, dict):
-        q = ask_next.get("question") or "שאלה הבאה:"
-        opts = ask_next.get("options", [])
-        # Remember what we asked so we can bind quick-reply clicks
-        st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
-        with st.chat_message("assistant"):
-            st.markdown(assistant_message + "\n\n**" + q + "**")
-            choice = render_quick_replies(opts)
-            if choice:
-                st.session_state._clicked_choice = choice
-        st.session_state.messages.append({"role":"assistant","content":assistant_message + ("\n\n"+q if q else "")})
+    # 3) "Ask next" with quick replies
+ask_next = payload.get("ask_next")
+if ask_next and isinstance(ask_next, dict):
+    q = ask_next.get("question") or "שאלה הבאה:"
+    opts = ask_next.get("options", [])
+    # remember what we asked so we can bind quick-reply clicks
+    st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
+    with st.chat_message("assistant"):
+        st.markdown(assistant_message + "
+
+**" + q + "**")
+        choice = render_quick_replies(opts)
+        if choice:
+            st.session_state._clicked_choice = choice
+    st.session_state.messages.append({"role":"assistant","content":assistant_message + ("
+
+"+q if q else "")})
     else:
-        # Fallback to next required slot not filled
+        # If model did not provide ask_next – fall back to next required slot not filled
         missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
         if missing:
             nxt = missing[0]
+            # remember last ask for quick-reply binding
             st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
             with st.chat_message("assistant"):
-                st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
+                st.markdown(assistant_message + f"
+
+**{nxt.prompt}**")
                 choice = render_quick_replies(nxt.options or [])
                 if choice:
                     st.session_state._clicked_choice = choice
@@ -289,5 +306,8 @@ if user_text:
                 st.markdown(summ)
             st.session_state.messages.append({"role":"assistant","content":summ})
 
+# =========================
+# Footer / Next steps
+# =========================
 st.markdown("---")
-st.caption("MVP – שאלון מוטמע בצ'אט + בחירת ספק מודל (OpenAI/Gemini). בהמשך: ניקוד מתקדם, בדיקת אמינות, ויצוא PDF.")
+st.caption("גרסת MVP: שאלון מוטמע בצ'אט + בחירת ספק מודל (OpenAI/Gemini). בהמשך: ניקוד מתקדם, בדיקת אמינות, ויצוא PDF.")
