@@ -69,7 +69,6 @@ SLOTS: List[Slot] = [
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
-# מותגים מוכרים בישראל
 allowed_brands = ["טויוטה","מאזדה","יונדאי","קיה","פולקסווגן","סקודה",
 "סוזוקי","מיצובישי","ניסאן","הונדה","פיג'ו","סיטרואן","רנו",
 "שברולט","פורד","סיאט","אופל"]
@@ -112,7 +111,6 @@ st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '
 # Helpers
 # =========================
 def parse_int(text: str) -> Optional[int]:
-    """ תומך גם בקלט כמו '20 אלף' """
     text = text.lower().replace(",", "").replace(" ", "")
     if "אלף" in text:
         nums = re.findall(r"\d+", text)
@@ -147,6 +145,54 @@ def call_model(prompt: str) -> str:
     except Exception as e:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
+
+def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=2) -> Dict[str,Any]:
+    results = []
+    for _ in range(repeats):
+        sub_prompt = f"""
+        בדוק עבור הדגם {model} (יד שנייה בישראל, מחירים והערכות בשקלים חדשים – ₪ בלבד).
+        ודא שהדגם מוצע בישראל במחיר התואם לתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪
+        (לפי מחירון לוי יצחק או אתר יד2). אם הדגם לא נכנס בתקציב, החזר "valid": false.
+        
+        החזר JSON:
+        {{
+          "model":"{model}",
+          "valid": true,
+          "reliability":88,
+          "annual_cost":{{
+             "insurance": 8500,
+             "fuel": 7500,
+             "maintenance": 3000,
+             "repairs": 2000,
+             "depreciation": 4000
+          }},
+          "issues":["גיר","מערכת חשמל"]
+        }}
+        """
+        txt = call_model(sub_prompt)
+        try:
+            data = json.loads(re.search(r"\{.*\}", txt, re.S).group())
+            results.append(data)
+        except Exception:
+            pass
+
+    if not results: 
+        return {"model":model,"valid":False,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":["נתון חסר"]}
+
+    avg = {"model":model,"valid":True,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
+    n = len(results)
+    for r in results:
+        if r.get("valid", True) is False:
+            avg["valid"] = False
+        avg["reliability"] += r.get("reliability",0)
+        for k in avg["annual_cost"]:
+            avg["annual_cost"][k] += r.get("annual_cost",{}).get(k,0)
+        avg["issues"].extend(r.get("issues",[]))
+    avg["reliability"] = int(avg["reliability"]/max(1,n))
+    for k in avg["annual_cost"]:
+        avg["annual_cost"][k] = int(avg["annual_cost"][k]/max(1,n))
+    avg["issues"] = list(set(avg["issues"]))
+    return avg
 
 # =========================
 # Progress bar
@@ -206,4 +252,55 @@ if user_text:
         with st.chat_message("assistant"):
             st.markdown("✅ מחפש רכבים מתאימים בישראל...")
 
-        # כאן ימשיך הקוד לבחירת דגמים ובדיקת אמינות כמו בגרסה הקודמת...
+        prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
+בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד (יבוא סדיר או מקביל).
+ודא שכל דגם נכנס בתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪ לפי מחירון ישראלי.
+החזר JSON:
+{{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
+        txt = call_model(prompt)
+        try:
+            recs = json.loads(re.search(r"\{.*\}", txt, re.S).group())
+        except Exception:
+            recs = {"recommendations":[]}
+
+        filtered = []
+        for r in recs.get("recommendations",[]):
+            if any(brand in r["model"] for brand in allowed_brands):
+                filtered.append(r)
+        if not filtered:
+            filtered = [{"model":"טויוטה קורולה","why":"אמינה מאוד ובשוק הישראלי"},
+                        {"model":"מאזדה 3","why":"פופולרית ושמירת ערך"},
+                        {"model":"יונדאי i30","why":"נפוצה מאוד"},
+                        {"model":"קיה סיד","why":"משפחתית חסכונית"},
+                        {"model":"סקודה אוקטביה","why":"מרווחת ופופולרית בציים"}]
+
+        all_models = [r["model"] for r in filtered]
+
+        results = []
+        progress = st.progress(0)
+        for i, model in enumerate(all_models):
+            with st.spinner(f"בודק אמינות ועלויות עבור {model}..."):
+                res = check_model_reliability(model, answers, repeats=2)
+                if res.get("valid", True):
+                    results.append(res)
+            progress.progress(int((i+1)/len(all_models)*100))
+
+        # טבלה
+        table_md = "| דגם | אמינות | ביטוח | דלק | תחזוקה | תיקונים | ירידת ערך | סה\"כ | תקלות |\n|---|---|---|---|---|---|---|---|---|\n"
+        best_model = None
+        best_total = 10**9
+        for r in results:
+            ac = r["annual_cost"]
+            total = sum(ac.values())
+            if total < best_total:
+                best_total = total
+                best_model = r["model"]
+            table_md += f"| {r['model']} | {r['reliability']} | {ac['insurance']} | {ac['fuel']} | {ac['maintenance']} | {ac['repairs']} | {ac['depreciation']} | {total} | {', '.join(r['issues'])} |\n"
+
+        final_msg = "### תוצאות בדיקת אמינות ותחזוקה\n" + table_md + f"\n✅ ההמלצה המובילה: **{best_model}**"
+        with st.chat_message("assistant"):
+            st.markdown(final_msg)
+        st.session_state.messages.append({"role":"assistant","content":final_msg})
+
+st.markdown("---")
+st.caption("האפליקציה כוללת כפתור התחלה מחדש, מדד התקדמות לשאלון, Spinner ו-Progress bar בזמן חישוב, ובודקת התאמה לתקציב לפי מחירון ישראלי.")
