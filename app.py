@@ -20,7 +20,7 @@ try:
 except Exception:
     genai = None
 
-st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט עם שאלון מוטמע", page_icon="🤖🚗", layout="centered")
+st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט עם שאלון", page_icon="🤖🚗", layout="centered")
 
 RTL = """
 <style>
@@ -55,7 +55,6 @@ SLOTS: List[Slot] = [
     Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה? (לדוגמה: 15000)", "int"),
     Slot("gearbox", "תיבת הילוכים", "יש לך העדפה לגיר – אוטומט או ידני?", "text"),
     Slot("region", "אזור בארץ", "באיזה אזור בארץ אתה גר?", "text"),
-    # חדשים:
     Slot("engine_size", "נפח מנוע", "מה נפח המנוע המועדף עליך? (לדוגמה: 1600)", "int"),
     Slot("turbo", "טורבו", "האם אתה מחפש מנוע עם טורבו או בלי טורבו?", "text"),
 ]
@@ -129,6 +128,54 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
 
+def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -> Dict[str,Any]:
+    results = []
+    for _ in range(repeats):
+        sub_prompt = f"""
+        בדוק עבור הדגם {model} (יד שנייה בישראל).
+        התחשב בערכי יסוד:
+        - מחיר ליטר בנזין בישראל ~7 ₪
+        - ביטוח שנתי לנהג צעיר: 7,000–10,000 ₪
+        - טיפולים שנתיים: 2,000–3,500 ₪
+        - ירידת ערך: רכבים יפניים 8–10%, קוריאניים 10–12%, אירופאיים 12–15%, צרפתיים 15–18%
+        
+        החזר JSON:
+        {{
+          "model":"{model}",
+          "reliability":90,
+          "annual_cost":{{
+             "insurance": 8500,
+             "fuel": 7200,
+             "maintenance": 2500,
+             "repairs": 2000,
+             "depreciation": 4000
+          }},
+          "issues":["גיר","חשמל"]
+        }}
+        """
+        txt = call_model(sub_prompt)
+        try:
+            data = json.loads(re.search(r"\{.*\}", txt, re.S).group())
+            results.append(data)
+        except Exception:
+            pass
+
+    if not results: 
+        return {"model":model,"reliability":50,"annual_cost":{"insurance":9000,"fuel":7000,"maintenance":3000,"repairs":2000,"depreciation":4000},"issues":["נתון חסר"]}
+
+    avg = {"model":model,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
+    for r in results:
+        avg["reliability"] += r.get("reliability",0)
+        for k in avg["annual_cost"]:
+            avg["annual_cost"][k] += r.get("annual_cost",{}).get(k,0)
+        avg["issues"].extend(r.get("issues",[]))
+    n = len(results)
+    avg["reliability"] = int(avg["reliability"]/n)
+    for k in avg["annual_cost"]:
+        avg["annual_cost"][k] = int(avg["annual_cost"][k]/n)
+    avg["issues"] = list(set(avg["issues"]))
+    return avg
+
 # =========================
 # Display history
 # =========================
@@ -144,7 +191,6 @@ user_text = st.chat_input("כתוב תשובה כאן והקש אנטר...")
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
-    # שמירה לתוך תשובות
     if st.session_state.get("last_ask"):
         slot = st.session_state.last_ask
         if slot.kind == "int":
@@ -154,7 +200,6 @@ if user_text:
             st.session_state.answers[slot.key] = user_text.strip()
         st.session_state.last_ask = None
 
-    # מציאת השאלה הבאה
     nxt = next_missing_required()
     if nxt:
         st.session_state.last_ask = nxt
@@ -162,14 +207,13 @@ if user_text:
             st.markdown(nxt.prompt)
         st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
     else:
-        # === כל השאלון מולא ===
         answers = st.session_state.answers
         with st.chat_message("assistant"):
             st.markdown("✅ סיימנו את שלב השאלון. מחפש רכבים מתאימים...")
 
-        # שלב ראשון: בקשת דגמים
         prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
-תן רשימת 5 דגמי רכבים מתאימים (יד 2 בישראל). החזר JSON:
+בחר 5 דגמי רכבים יד שנייה זמינים בישראל *בתוך התקציב*.
+החזר JSON:
 {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
         txt = call_model(prompt)
         try:
@@ -182,31 +226,20 @@ if user_text:
             all_models = ["טויוטה קורולה", "מאזדה 3", "קיה סיד"]
 
         results = []
-        # שלב שני: בדיקת אמינות לכל דגם
         for model in all_models:
-            sub_prompt = f"""בדוק עבור הדגם {model} (יד שנייה בישראל):
-- ציון אמינות כללי (0–100),
-- עלויות תחזוקה שנתיות ממוצעות (ש"ח),
-- תקלות נפוצות.
-החזר JSON:
-{{"model":"{model}","reliability":90,"annual_cost":4500,"issues":["גיר","חשמל"]}}"""
-            sub_txt = call_model(sub_prompt)
-            try:
-                data = json.loads(re.search(r"\{.*\}", sub_txt, re.S).group())
-                results.append(data)
-            except Exception:
-                results.append({"model":model,"reliability":50,"annual_cost":5000,"issues":["נתון חסר"]})
+            results.append(check_model_reliability(model, answers, repeats=3))
 
-        # טבלה מסכמת
-        table_md = "| דגם | אמינות | עלות שנתית | תקלות נפוצות |\n|---|---|---|---|\n"
+        # טבלה מפורטת
+        table_md = "| דגם | אמינות | ביטוח | דלק | תחזוקה | תיקונים | ירידת ערך | סה\"כ | תקלות |\n|---|---|---|---|---|---|---|---|---|\n"
         best_model = None
-        best_score = -1
+        best_total = 10**9
         for r in results:
-            score = r.get("reliability",0) - int(r.get("annual_cost",0)/1000)
-            if score > best_score:
-                best_score = score
+            ac = r["annual_cost"]
+            total = sum(ac.values())
+            if total < best_total:
+                best_total = total
                 best_model = r["model"]
-            table_md += f"| {r['model']} | {r.get('reliability','?')} | {r.get('annual_cost','?')} | {', '.join(r.get('issues',[]))} |\n"
+            table_md += f"| {r['model']} | {r['reliability']} | {ac['insurance']} | {ac['fuel']} | {ac['maintenance']} | {ac['repairs']} | {ac['depreciation']} | {total} | {', '.join(r['issues'])} |\n"
 
         final_msg = "### תוצאות בדיקת אמינות ותחזוקה\n" + table_md + f"\n✅ ההמלצה המובילה: **{best_model}**"
         with st.chat_message("assistant"):
@@ -214,4 +247,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("בסיום השאלון: שלב המלצות חכמות כולל אמינות, עלויות ותקלות נפוצות.")
+st.caption("האפליקציה מבצעת 3 בדיקות לכל דגם ומציגה ממוצע של אמינות + עלויות תחזוקה מפורטות.")
