@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
-# Run locally: streamlit run app.py
-# Works on Streamlit Cloud. Set API keys in Secrets:
+# Run: streamlit run app.py
+# Set API keys via env or Streamlit secrets:
 #   OPENAI_API_KEY / GEMINI_API_KEY
 
 import os
@@ -9,7 +9,6 @@ import json
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-from datetime import datetime
 
 import streamlit as st
 
@@ -69,7 +68,7 @@ SLOTS: List[Slot] = [
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
     Slot("parking", "חניה", "יש לך חניה פרטית או חניה ברחוב?", "select", options=["פרטית","רחוב"]),
     Slot("fuel_importance", "חשיבות צריכת דלק", "כמה חשובה לך צריכת דלק – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
+    Slot("km_per_year", 'ק"מ לשנה', "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
     Slot("tax_importance", "חשיבות אגרת טסט", "עד כמה חשובה עלות אגרת הרישוי – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("ins_importance", "חשיבות ביטוח", "עד כמה חשובה עלות הביטוח – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
     Slot("gearbox", "תיבת הילוכים (לא חובה)", "יש לך העדפה לגיר – אוטומט או ידני?", "select", required=False, options=["לא משנה","אוטומט","ידני"]),
@@ -88,6 +87,10 @@ if "answers" not in st.session_state:
     st.session_state.answers: Dict[str, Any] = {}
 if "ask_index" not in st.session_state:
     st.session_state.ask_index = 0  # which slot to ask next (by order)
+if "last_ask" not in st.session_state:
+    st.session_state.last_ask = None
+if "_clicked_choice" not in st.session_state:
+    st.session_state._clicked_choice = None
 
 # =========================
 # Provider selection + keys
@@ -151,14 +154,14 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
             )
             txt = resp.choices[0].message.content
         elif PROVIDER == "Gemini" and gem_model is not None:
-            # Gemini expects a single string; concat messages
             as_text = "\n".join([f"{m['role']}: {m['content']}" for m in context_msgs])
             r = gem_model.generate_content(as_text)
             txt = r.text
         else:
-            txt = '{"assistant_message": "(אין מפתח API מוגדר. אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": null}'
+            # No API key → start from budget_min with buttons
+            txt = '{"assistant_message": "(אין מפתח API מוגדר. אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
     except Exception:
-        txt = '{"assistant_message": "(שגיאה זמנית בתשובה, אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": null}'
+        txt = '{"assistant_message": "(שגיאה זמנית בתשובה, אשתמש בשאלון המובנה)", "filled_slots": {}, "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}}'
 
     # Extract JSON
     try:
@@ -170,9 +173,9 @@ def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
         return payload
     except Exception:
         return {
-            "assistant_message": "קיבלתי. נמשיך בבקשה עם השאלון. מה סוג הרכב? קטן / משפחתי / ג'יפ / מסחרי קל",
+            "assistant_message": "קיבלתי. נמשיך בבקשה עם השאלון.",
             "filled_slots": {},
-            "ask_next": {"key":"body","question":"מה סוג הרכב?","options":["קטן","משפחתי","ג'יפ","מסחרי קל"]}
+            "ask_next": {"key":"budget_min","question":"מה התקציב המינימלי שלך בשקלים?","options":["20,000","40,000","60,000","80,000"]}
         }
 
 # -----------------------
@@ -204,14 +207,25 @@ for m in st.session_state.messages:
         st.markdown(m["content"])
 
 # -----------------------
-# Chat turn
+# Chat turn (with proper quick-reply binding)
 # -----------------------
 user_text = st.chat_input("כתוב תשובה חופשית… או בחר אפשרות כאשר תוצג מעל אינפוט זה")
 
+# Handle quick-reply clicks BEFORE sending anything to the model
 clicked_choice = st.session_state.get("_clicked_choice")
 if clicked_choice:
-    user_text = clicked_choice
-    st.session_state._clicked_choice = None
+    last_ask = st.session_state.get("last_ask")
+    if last_ask and isinstance(last_ask, dict) and last_ask.get("key"):
+        # Bind the clicked option to the last asked slot
+        st.session_state.answers[last_ask["key"]] = clicked_choice
+        st.session_state.messages.append({"role":"user","content":clicked_choice})
+        st.session_state._clicked_choice = None
+        st.session_state.last_ask = None
+        user_text = None  # already handled this turn
+    else:
+        # Fallback: treat as plain text
+        user_text = clicked_choice
+        st.session_state._clicked_choice = None
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
@@ -237,6 +251,8 @@ if user_text:
     if ask_next and isinstance(ask_next, dict):
         q = ask_next.get("question") or "שאלה הבאה:"
         opts = ask_next.get("options", [])
+        # Remember what we asked so we can bind quick-reply clicks
+        st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
         with st.chat_message("assistant"):
             st.markdown(assistant_message + "\n\n**" + q + "**")
             choice = render_quick_replies(opts)
@@ -248,6 +264,7 @@ if user_text:
         missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
         if missing:
             nxt = missing[0]
+            st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
             with st.chat_message("assistant"):
                 st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
                 choice = render_quick_replies(nxt.options or [])
