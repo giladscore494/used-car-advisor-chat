@@ -106,33 +106,33 @@ else:
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
 # =========================
-# Yad2 Price Fetch
+# Search price via DuckDuckGo
 # =========================
-YAD2_IDS = {
-    "פיאט בראבו": {"manufacturer": 45, "model": 10631},
-    "מאזדה 3": {"manufacturer": 38, "model": 824},
-    "טויוטה קורולה": {"manufacturer": 32, "model": 845},
-    "קיה סיד": {"manufacturer": 47, "model": 850},
-    "יונדאי i30": {"manufacturer": 26, "model": 832},
-}
-
-def search_yad2_price(manufacturer_id: int, model_id: int) -> Optional[tuple]:
-    url = f"https://www.yad2.co.il/price-list/feed?manufacturer={manufacturer_id}&model={model_id}"
+def search_price_from_google(query: str) -> Optional[tuple]:
+    url = f"https://duckduckgo.com/html/?q={query}+מחירון+site:yad2.co.il"
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=10, headers={"User-Agent":"Mozilla/5.0"})
         r.raise_for_status()
     except Exception:
         return None
-    soup = BeautifulSoup(r.text, "xml")
-    prices = []
-    for item in soup.find_all("item"):
-        try:
-            price = int(item.find("price").text.replace(",", ""))
-            prices.append(price)
-        except:
-            continue
-    if prices:
-        return min(prices), max(prices)
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    links = [a["href"] for a in soup.find_all("a", href=True) if "yad2.co.il" in a["href"]]
+    if not links:
+        return None
+
+    try:
+        r2 = requests.get(links[0], timeout=10, headers={"User-Agent":"Mozilla/5.0"})
+        text = r2.text
+        # מציאת מספרים בדף
+        prices = re.findall(r"\d{1,3}(?:,\d{3})", text)
+        prices = [int(p.replace(",","")) for p in prices]
+        prices = [p for p in prices if 1000 < p < 500000]  # טווח רלוונטי למחיר רכב
+        if len(prices) >= 2:
+            return min(prices), max(prices)
+    except Exception:
+        return None
+
     return None
 
 # =========================
@@ -155,21 +155,15 @@ def call_model(prompt: str) -> str:
     return "(אין חיבור למודל)"
 
 # =========================
-# Reliability Check with Yad2 Price
+# Reliability Check
 # =========================
 def check_model_reliability(model: str, answers: Dict[str,Any]) -> Dict[str,Any]:
-    # בדיקת מחיר מיד2 אם קיים מזהה
-    yad2_range = None
-    for name, ids in YAD2_IDS.items():
-        if name in model:
-            yad2_range = search_yad2_price(ids["manufacturer"], ids["model"])
-            break
-
-    if yad2_range:
-        low, high = yad2_range
-        context_price = f"נמצאו מחירים ב-Yad2 בטווח {low}–{high} ₪"
+    price_range = search_price_from_google(model)
+    if price_range:
+        low, high = price_range
+        context_price = f"נמצאו מחירים ב-Yad2 בגוגל בטווח {low}–{high} ₪"
     else:
-        context_price = "לא נמצאו מחירים ב-Yad2, השתמש בהערכה"
+        context_price = "לא נמצאו מחירים בגוגל, השתמש בהערכה"
 
     sub_prompt = f"""
     בדוק עבור הדגם {model} (יד שנייה בישראל).
@@ -287,4 +281,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("האפליקציה מחפשת 10 דגמים, בודקת מחירים חיים ב-Yad2 (אם קיים מזהה), בודקת אמינות ועלויות, ומציגה את 5 המומלצים ביותר.")
+st.caption("האפליקציה מחפשת 10 דגמים, בודקת מחירים חיים ב-Yad2 דרך חיפוש גוגל, בודקת אמינות ועלויות, ומציגה את 5 המומלצים ביותר.")
