@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+# UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
+# Run: streamlit run app.py
 
 import os
 import json
@@ -24,17 +27,13 @@ RTL = """
 html, body, [class*="css"] { direction: rtl; text-align: right; }
 .block-container { padding-top: .6rem; max-width: 880px; }
 .stChatMessage { text-align: right; }
-.user-msg { background: #eef6ff; padding: .65rem .9rem; border-radius: 14px; }
-.bot-msg { background: #f8fafc; padding: .65rem .9rem; border-radius: 14px; }
-.badge { display:inline-block; padding:.15rem .55rem; border-radius:999px; background:#e2e8f0; margin-left:.35rem; font-size:.8rem }
-.chip { display:inline-block; padding: .4rem .75rem; border-radius: 999px; border:1px solid #e5e7eb; margin: .25rem; cursor:pointer }
-.progress{height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden}
-.progress>div{height:100%;background:#22c55e}
-hr{border:none;border-top:1px solid #eee;margin:.7rem 0}
 </style>
 """
 st.markdown(RTL, unsafe_allow_html=True)
 
+# =========================
+# Questionnaire slots
+# =========================
 @dataclass
 class Slot:
     key: str
@@ -42,39 +41,41 @@ class Slot:
     prompt: str
     kind: str
     required: bool = True
-    options: Optional[List[str]] = None
 
 SLOTS: List[Slot] = [
-    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים?", "int"),
-    Slot("budget_max", "תקציב מקסימום (₪)", "ומה המקסימום שאתה מוכן לשלם?", "int"),
-    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש – קטן / משפחתי / ג'יפ / מסחרי קל?", "select", options=["קטן","משפחתי","ג'יפ","מסחרי קל"]),
-    Slot("character", "אופי רכב", "העדפה: ספורטיבי או דיילי (יומיומי)?", "select", options=["ספורטיבי","דיילי"]),
-    Slot("usage", "שימוש עיקרי", "השימוש העיקרי יהיה יותר בעיר, בין-עירוני או שטח?", "select", options=["עירוני","בין־עירוני","שטח"]),
-    Slot("priority", "עדיפות", "מה העדיפות המרכזית – אמינות / נוחות / ביצועים / עיצוב?", "select", options=["אמינות","נוחות","ביצועים","עיצוב"]),
-    Slot("passengers", "מספר נוסעים ממוצע", "בממוצע כמה נוסעים ייסעו ברכב?", "int"),
-    Slot("fuel", "סוג דלק", "האם יש עדיפות לדלק: בנזין / דיזל / היברידי / חשמלי או שכל אפשרות פתוחה?", "select", options=["בנזין","דיזל","היברידי","חשמלי","כל"]),
-    Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
-    Slot("parking", "חניה", "יש לך חניה פרטית או חניה ברחוב?", "select", options=["פרטית","רחוב"]),
-    Slot("fuel_importance", "חשיבות צריכת דלק", "כמה חשובה לך צריכת דלק – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("km_per_year", 'ק"מ לשנה', "כמה קילומטרים אתה נוסע בערך בשנה?", "int"),
-    Slot("tax_importance", "חשיבות אגרת טסט", "עד כמה חשובה עלות אגרת הרישוי – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("ins_importance", "חשיבות ביטוח", "עד כמה חשובה עלות הביטוח – לא חשוב / חשוב / קריטי?", "select", options=["לא חשוב","חשוב","קריטי"]),
-    Slot("gearbox", "תיבת הילוכים (לא חובה)", "יש לך העדפה לגיר – אוטומט או ידני?", "select", required=False, options=["לא משנה","אוטומט","ידני"]),
-    Slot("region", "אזור בארץ (לא חובה)", "באיזו עיר/אזור בארץ אתה גר?", "text", required=False),
+    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40,000)", "int"),
+    Slot("budget_max", "תקציב מקסימום (₪)", "מה התקציב המקסימלי שלך בשקלים? (לדוגמה: 80,000)", "int"),
+    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (לדוגמה: משפחתי, קטן, ג'יפ)", "text"),
+    Slot("character", "אופי רכב", "האם אתה מחפש רכב ספורטיבי או יומיומי?", "text"),
+    Slot("usage", "שימוש עיקרי", "השימוש העיקרי יהיה בעיר, בין-עירוני או שטח?", "text"),
+    Slot("priority", "עדיפות מרכזית", "מה הכי חשוב לך – אמינות, נוחות, ביצועים או עיצוב?", "text"),
+    Slot("passengers", "מספר נוסעים ממוצע", "בממוצע כמה נוסעים ייסעו ברכב? (לדוגמה: 5)", "int"),
+    Slot("fuel", "סוג דלק", "איזה סוג דלק תעדיף – בנזין, דיזל, היברידי או חשמלי?", "text"),
+    Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה? (לדוגמה: 2015)", "int"),
+    Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה? (לדוגמה: 15000)", "int"),
+    Slot("gearbox", "תיבת הילוכים", "יש לך העדפה לגיר – אוטומט או ידני?", "text"),
+    Slot("region", "אזור בארץ", "באיזה אזור בארץ אתה גר?", "text"),
+    # חדשים:
+    Slot("engine_size", "נפח מנוע", "מה נפח המנוע המועדף עליך? (לדוגמה: 1600)", "int"),
+    Slot("turbo", "טורבו", "האם אתה מחפש מנוע עם טורבו או בלי טורבו?", "text"),
 ]
 REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
+# =========================
+# App state
+# =========================
 if "messages" not in st.session_state:
     st.session_state.messages: List[Dict[str, str]] = [
-        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה טווח התקציב שלך? (אפשר לכתוב חופשי או לבחור בפתקיות כאן למטה)"}
+        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40,000)"}
     ]
 if "answers" not in st.session_state:
     st.session_state.answers: Dict[str, Any] = {}
 if "last_ask" not in st.session_state:
     st.session_state.last_ask = None
-if "_clicked_choice" not in st.session_state:
-    st.session_state._clicked_choice = None
 
+# =========================
+# Provider setup
+# =========================
 PROVIDER = st.sidebar.selectbox("ספק מודל", ["OpenAI", "Gemini"], index=0)
 openai_key = os.getenv("OPENAI_API_KEY", "")
 gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
@@ -94,157 +95,123 @@ else:
 
 st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '❌ ללא מפתח/ספריה'}")
 
-SYSTEM_PROMPT = {
-    "role":"system",
-    "content":(
-        "אתה עוזר קניות רכב יד 2 בעברית. תשאל שאלה אחת קצרה בכל פעם, הצע 3–6 אפשרויות קצרות ככפתורי בחירה,"
-        " וגם קבל תשובה חופשית. עדכן מילון JSON בשם filled_slots כשנמסרים ערכים, ובחר את השדה הבא שנדרש."
-        " תמיד החזר בפורמט JSON תקין:")
-}
-FORMAT_HINT = {
-    "role":"system",
-    "content":(
-        '{"assistant_message": "טקסט לבן-אדם",'
-        ' "filled_slots": {"budget_min": 40000, "body": "משפחתי"},'
-        ' "ask_next": {"key": "fuel", "question": "איזה סוג דלק תעדיף?", "options": ["בנזין","דיזל","היברידי","חשמלי","כל"]}}')
-}
+# =========================
+# Helpers
+# =========================
+def parse_int(text: str) -> Optional[int]:
+    nums = re.findall(r"\d+", text.replace(",", ""))
+    if nums:
+        try:
+            return int(nums[0])
+        except Exception:
+            return None
+    return None
 
-def build_chat_for_llm(messages: List[Dict[str,str]], answers: Dict[str,Any]) -> List[Dict[str,str]]:
-    ctx = [SYSTEM_PROMPT, FORMAT_HINT]
-    state_line = json.dumps({k: v for k, v in answers.items()}, ensure_ascii=False)
-    ctx.append({"role":"system", "content": f"מצב שדות נוכחי: {state_line}"})
-    ctx.extend(messages[-8:])
-    return ctx
+def next_missing_required() -> Optional[Slot]:
+    for s in SLOTS:
+        if s.required and (s.key not in st.session_state.answers or st.session_state.answers[s.key] in [None,"",0,""]):
+            return s
+    return None
 
-def call_llm(context_msgs: List[Dict[str,str]]) -> Dict[str,Any]:
+def call_model(prompt: str) -> str:
     try:
         if PROVIDER == "OpenAI" and has_key and oai_client:
             resp = oai_client.chat.completions.create(
                 model=model_name,
-                messages=context_msgs,
+                messages=[{"role":"user","content":prompt}],
                 temperature=0.3,
             )
-            txt = resp.choices[0].message.content
+            return resp.choices[0].message.content
         elif PROVIDER == "Gemini" and has_key and gem_model:
-            as_text = "\n".join([f"{m['role']}: {m['content']}" for m in context_msgs])
-            r = gem_model.generate_content(as_text)
-            txt = r.text or ""
-        else:
-            txt = '{"assistant_message": "(אין חיבור לספק)", "filled_slots": {}, "ask_next": null}'
-    except Exception:
-        txt = '{"assistant_message": "(שגיאה אצל הספק)", "filled_slots": {}, "ask_next": null}'
-    try:
-        m = re.search(r"\{[\s\S]*\}$", txt.strip())
-        payload = json.loads(m.group(0) if m else txt)
-        if not isinstance(payload, dict):
-            raise ValueError("not a dict")
-        return payload
-    except Exception:
-        return {"assistant_message":"", "filled_slots":{}, "ask_next":None}
+            r = gem_model.generate_content(prompt)
+            return r.text or ""
+    except Exception as e:
+        return f"(שגיאה בקריאה למודל: {e})"
+    return "(אין חיבור למודל)"
 
-def render_quick_replies(options: List[str]):
-    if not options:
-        return None
-    cols = st.columns(min(3, len(options)))
-    clicks = None
-    for i, opt in enumerate(options):
-        with cols[i % len(cols)]:
-            if st.button(opt, key=f"qr-{opt}-{i}"):
-                clicks = opt
-    return clicks
-
-def progress_bar(answers: Dict[str,Any]):
-    filled = sum(1 for k in REQUIRED_KEYS if k in answers and answers[k] not in [None, "", 0])
-    pct = int(100 * filled / max(1, len(REQUIRED_KEYS)))
-    st.markdown(f"**התקדמות השאלון:** {pct}%")
-    st.markdown(f"<div class='progress'><div style='width:{pct}%'></div></div>", unsafe_allow_html=True)
-
-st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון מובנה")
-progress_bar(st.session_state.answers)
-
+# =========================
+# Display history
+# =========================
+st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון")
 for m in st.session_state.messages:
     with st.chat_message("assistant" if m["role"]=="assistant" else "user"):
         st.markdown(m["content"])
 
-user_text = st.chat_input("כתוב תשובה חופשית… או בחר אפשרות כאשר תוצג מעל אינפוט זה")
-
-clicked_choice = st.session_state.get("_clicked_choice")
-if clicked_choice:
-    last_ask = st.session_state.get("last_ask")
-    if last_ask and isinstance(last_ask, dict) and last_ask.get("key"):
-        st.session_state.answers[last_ask["key"]] = clicked_choice
-        st.session_state.messages.append({"role":"user","content":clicked_choice})
-        st.session_state._clicked_choice = None
-        st.session_state.last_ask = None
-        user_text = clicked_choice
-    else:
-        user_text = clicked_choice
-        st.session_state._clicked_choice = None
+# =========================
+# Chat input
+# =========================
+user_text = st.chat_input("כתוב תשובה כאן והקש אנטר...")
 
 if user_text:
     st.session_state.messages.append({"role":"user","content":user_text})
-    ctx = build_chat_for_llm(st.session_state.messages, st.session_state.answers)
-    payload = call_llm(ctx)
-
-    filled_slots = payload.get("filled_slots") or {}
-    if isinstance(filled_slots, dict):
-        for k, v in list(filled_slots.items()):
-            if k in ["budget_min","budget_max","passengers","km_per_year","year_min"]:
-                try:
-                    filled_slots[k] = int(str(v).replace(",",""))
-                except Exception:
-                    pass
-        st.session_state.answers.update({k: v for k, v in filled_slots.items() if v not in [None, ""]})
-
-    assistant_message = payload.get("assistant_message") or "קיבלתי. נמשיך."
-    ask_next = payload.get("ask_next")
-    if ask_next and isinstance(ask_next, dict):
-        q = ask_next.get("question") or "שאלה הבאה:"
-        opts = ask_next.get("options", [])
-        st.session_state.last_ask = {"key": ask_next.get("key"), "options": opts}
-        with st.chat_message("assistant"):
-            st.markdown(assistant_message + f"\n\n**{q}**")
-            choice = render_quick_replies(opts)
-            if choice:
-                st.session_state._clicked_choice = choice
-        st.session_state.messages.append({"role":"assistant","content":assistant_message + ("\n\n" + q if q else "")})
-    else:
-        missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
-        if missing:
-            nxt = missing[0]
-            st.session_state.last_ask = {"key": nxt.key, "options": (nxt.options or [])}
-            with st.chat_message("assistant"):
-                st.markdown(assistant_message + f"\n\n**{nxt.prompt}**")
-                choice = render_quick_replies(nxt.options or [])
-                if choice:
-                    st.session_state._clicked_choice = choice
-            st.session_state.messages.append({"role":"assistant","content":assistant_message + "\n\n" + nxt.prompt})
+    # שמירה לתוך תשובות
+    if st.session_state.get("last_ask"):
+        slot = st.session_state.last_ask
+        if slot.kind == "int":
+            val = parse_int(user_text)
+            if val: st.session_state.answers[slot.key] = val
         else:
-            # --- Final recommendations prompt ---
-            final_instruction = {
-                "role": "system",
-                "content": (
-                    "בהתבסס על השדות שנאספו במילון 'מצב שדות נוכחי', "
-                    "החזר JSON תקין בלבד במבנה: "
-                    '{"assistant_message": "תקציר קצר", '
-                    '"recommendations": [{"model":"שם דגם","why":"נימוק קצר בעברית"}], '
-                    '"next_step":"שאלה קצרה להמשך"}'
-                )
-            }
-            final_ctx = [final_instruction]
-            final_ctx.extend(build_chat_for_llm(st.session_state.messages, st.session_state.answers))
-            final_payload = call_llm(final_ctx)
+            st.session_state.answers[slot.key] = user_text.strip()
+        st.session_state.last_ask = None
 
-            recs = (final_payload or {}).get("recommendations") or []
-            assistant_message = (final_payload or {}).get("assistant_message") or "סיימנו לאסוף נתונים!"
-            next_step = (final_payload or {}).get("next_step") or "תרצה לעבור לשלב 'מודעה ספציפית'?"
+    # מציאת השאלה הבאה
+    nxt = next_missing_required()
+    if nxt:
+        st.session_state.last_ask = nxt
+        with st.chat_message("assistant"):
+            st.markdown(nxt.prompt)
+        st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
+    else:
+        # === כל השאלון מולא ===
+        answers = st.session_state.answers
+        with st.chat_message("assistant"):
+            st.markdown("✅ סיימנו את שלב השאלון. מחפש רכבים מתאימים...")
 
-            bullet = "\n".join([f"• {r.get('model','?')} – {r.get('why','')}" for r in recs]) if recs else "• אין המלצות זמינות"
-            summ = assistant_message + "\n\n" + bullet + "\n\n" + next_step
-            with st.chat_message("assistant"):
-                st.markdown(summ)
-            st.session_state.messages.append({"role":"assistant","content":summ})
+        # שלב ראשון: בקשת דגמים
+        prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
+תן רשימת 5 דגמי רכבים מתאימים (יד 2 בישראל). החזר JSON:
+{{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
+        txt = call_model(prompt)
+        try:
+            recs = json.loads(re.search(r"\{.*\}", txt, re.S).group())
+        except Exception:
+            recs = {"recommendations":[]}
+
+        all_models = [r["model"] for r in recs.get("recommendations",[])]
+        if not all_models:
+            all_models = ["טויוטה קורולה", "מאזדה 3", "קיה סיד"]
+
+        results = []
+        # שלב שני: בדיקת אמינות לכל דגם
+        for model in all_models:
+            sub_prompt = f"""בדוק עבור הדגם {model} (יד שנייה בישראל):
+- ציון אמינות כללי (0–100),
+- עלויות תחזוקה שנתיות ממוצעות (ש"ח),
+- תקלות נפוצות.
+החזר JSON:
+{{"model":"{model}","reliability":90,"annual_cost":4500,"issues":["גיר","חשמל"]}}"""
+            sub_txt = call_model(sub_prompt)
+            try:
+                data = json.loads(re.search(r"\{.*\}", sub_txt, re.S).group())
+                results.append(data)
+            except Exception:
+                results.append({"model":model,"reliability":50,"annual_cost":5000,"issues":["נתון חסר"]})
+
+        # טבלה מסכמת
+        table_md = "| דגם | אמינות | עלות שנתית | תקלות נפוצות |\n|---|---|---|---|\n"
+        best_model = None
+        best_score = -1
+        for r in results:
+            score = r.get("reliability",0) - int(r.get("annual_cost",0)/1000)
+            if score > best_score:
+                best_score = score
+                best_model = r["model"]
+            table_md += f"| {r['model']} | {r.get('reliability','?')} | {r.get('annual_cost','?')} | {', '.join(r.get('issues',[]))} |\n"
+
+        final_msg = "### תוצאות בדיקת אמינות ותחזוקה\n" + table_md + f"\n✅ ההמלצה המובילה: **{best_model}**"
+        with st.chat_message("assistant"):
+            st.markdown(final_msg)
+        st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("""גרסת MVP: שאלון מוטמע בצ'אט + בחירת ספק מודל (OpenAI/Gemini).
-בסיום השאלון מופעלות המלצות חכמות מהמודל.""")
+st.caption("בסיום השאלון: שלב המלצות חכמות כולל אמינות, עלויות ותקלות נפוצות.")
