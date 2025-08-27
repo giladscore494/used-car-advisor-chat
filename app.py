@@ -32,6 +32,14 @@ html, body, [class*="css"] { direction: rtl; text-align: right; }
 st.markdown(RTL, unsafe_allow_html=True)
 
 # =========================
+# כפתור התחל מחדש
+# =========================
+if st.sidebar.button("🔄 התחל מחדש"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.experimental_rerun()
+
+# =========================
 # Questionnaire slots
 # =========================
 @dataclass
@@ -43,8 +51,8 @@ class Slot:
     required: bool = True
 
 SLOTS: List[Slot] = [
-    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40,000)", "int"),
-    Slot("budget_max", "תקציב מקסימום (₪)", "מה התקציב המקסימלי שלך בשקלים? (לדוגמה: 80,000)", "int"),
+    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40 אלף)", "int"),
+    Slot("budget_max", "תקציב מקסימום (₪)", "מה התקציב המקסימלי שלך בשקלים? (לדוגמה: 80 אלף)", "int"),
     Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (לדוגמה: משפחתי, קטן, ג'יפ)", "text"),
     Slot("character", "אופי רכב", "האם אתה מחפש רכב ספורטיבי או יומיומי?", "text"),
     Slot("usage", "שימוש עיקרי", "השימוש העיקרי יהיה בעיר, בין-עירוני או שטח?", "text"),
@@ -52,8 +60,9 @@ SLOTS: List[Slot] = [
     Slot("passengers", "מספר נוסעים ממוצע", "בממוצע כמה נוסעים ייסעו ברכב? (לדוגמה: 5)", "int"),
     Slot("fuel", "סוג דלק", "איזה סוג דלק תעדיף – בנזין, דיזל, היברידי או חשמלי?", "text"),
     Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה? (לדוגמה: 2015)", "int"),
-    Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה? (לדוגמה: 15000)", "int"),
+    Slot("km_per_year", "ק\"מ לשנה", "כמה קילומטרים אתה נוסע בערך בשנה? (לדוגמה: 15 אלף)", "int"),
     Slot("gearbox", "תיבת הילוכים", "יש לך העדפה לגיר – אוטומט או ידני?", "text"),
+    Slot("gearbox_type", "סוג תיבת אוטומט", "אם תבחר אוטומט – האם חשוב לך שתהיה תיבה רגילה (פלנטרית) או שזה לא משנה (רובוטית / CVT)?", "text", required=False),
     Slot("region", "אזור בארץ", "באיזה אזור בארץ אתה גר?", "text"),
     Slot("engine_size", "נפח מנוע", "מה נפח המנוע המועדף עליך? (לדוגמה: 1600)", "int"),
     Slot("turbo", "טורבו", "האם אתה מחפש מנוע עם טורבו או בלי טורבו?", "text"),
@@ -70,7 +79,7 @@ allowed_brands = ["טויוטה","מאזדה","יונדאי","קיה","פולק�
 # =========================
 if "messages" not in st.session_state:
     st.session_state.messages: List[Dict[str, str]] = [
-        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40,000)"}
+        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים? (לדוגמה: 40 אלף)"}
     ]
 if "answers" not in st.session_state:
     st.session_state.answers: Dict[str, Any] = {}
@@ -103,7 +112,13 @@ st.sidebar.markdown(f"**סטטוס ספק:** {'✅ מחובר' if has_key else '
 # Helpers
 # =========================
 def parse_int(text: str) -> Optional[int]:
-    nums = re.findall(r"\d+", text.replace(",", ""))
+    """ תומך גם בקלט כמו '20 אלף' """
+    text = text.lower().replace(",", "").replace(" ", "")
+    if "אלף" in text:
+        nums = re.findall(r"\d+", text)
+        if nums:
+            return int(nums[0]) * 1000
+    nums = re.findall(r"\d+", text)
     if nums:
         try:
             return int(nums[0])
@@ -133,42 +148,21 @@ def call_model(prompt: str) -> str:
         return f"(שגיאה בקריאה למודל: {e})"
     return "(אין חיבור למודל)"
 
-def normalize_costs(ac: Dict[str,int], model:str) -> Dict[str,int]:
-    if ac["insurance"] < 6000 or ac["insurance"] > 12000:
-        ac["insurance"] = 9000
-    if ac["fuel"] < 3000 or ac["fuel"] > 15000:
-        ac["fuel"] = 8000
-    if ac["maintenance"] < 1000 or ac["maintenance"] > 6000:
-        ac["maintenance"] = 3000
-    if ac["repairs"] < 500 or ac["repairs"] > 5000:
-        ac["repairs"] = 2000
-    if ac["depreciation"] < 2000 or ac["depreciation"] > 15000:
-        if any(b in model for b in ["טויוטה","מאזדה","הונדה","סוזוקי","ניסאן","מיצובישי"]):
-            ac["depreciation"] = 4000
-        elif any(b in model for b in ["יונדאי","קיה"]):
-            ac["depreciation"] = 5000
-        elif any(b in model for b in ["פולקסווגן","סקודה","סיאט","אופל"]):
-            ac["depreciation"] = 6000
-        elif any(b in model for b in ["פיג'ו","סיטרואן","רנו"]):
-            ac["depreciation"] = 7000
-        else:
-            ac["depreciation"] = 5000
-    return ac
-
+# =========================
+# בדיקת אמינות עם התאמה לתקציב
+# =========================
 def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -> Dict[str,Any]:
     results = []
     for _ in range(repeats):
         sub_prompt = f"""
         בדוק עבור הדגם {model} (יד שנייה בישראל, מחירים והערכות בשקלים חדשים – ₪ בלבד).
-        התחשב בערכי יסוד מקומיים:
-        - מחיר ליטר בנזין בישראל ~7 ₪
-        - ביטוח שנתי לנהג צעיר: 7,000–10,000 ₪
-        - טיפולים שנתיים: 2,000–3,500 ₪
-        - ירידת ערך: רכבים יפניים 8–10%, קוריאניים 10–12%, אירופאיים 12–15%, צרפתיים 15–18%
+        ודא שהדגם מוצע בישראל במחיר התואם לתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪
+        (לפי מחירון לוי יצחק או אתר יד2). אם הדגם לא נכנס בתקציב, החזר "valid": false.
         
         החזר JSON:
         {{
           "model":"{model}",
+          "valid": true,
           "reliability":88,
           "annual_cost":{{
              "insurance": 8500,
@@ -188,20 +182,20 @@ def check_model_reliability(model: str, answers: Dict[str,Any], repeats:int=3) -
             pass
 
     if not results: 
-        return {"model":model,"reliability":50,"annual_cost":{"insurance":9000,"fuel":8000,"maintenance":3000,"repairs":2000,"depreciation":5000},"issues":["נתון חסר"]}
+        return {"model":model,"valid":False,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":["נתון חסר"]}
 
-    avg = {"model":model,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
+    avg = {"model":model,"valid":True,"reliability":0,"annual_cost":{"insurance":0,"fuel":0,"maintenance":0,"repairs":0,"depreciation":0},"issues":[]}
+    n = len(results)
     for r in results:
+        if r.get("valid", True) is False:
+            avg["valid"] = False
         avg["reliability"] += r.get("reliability",0)
         for k in avg["annual_cost"]:
             avg["annual_cost"][k] += r.get("annual_cost",{}).get(k,0)
         avg["issues"].extend(r.get("issues",[]))
-    n = len(results)
-    avg["reliability"] = int(avg["reliability"]/n)
+    avg["reliability"] = int(avg["reliability"]/max(1,n))
     for k in avg["annual_cost"]:
-        avg["annual_cost"][k] = int(avg["annual_cost"][k]/n)
-
-    avg["annual_cost"] = normalize_costs(avg["annual_cost"], model)
+        avg["annual_cost"][k] = int(avg["annual_cost"][k]/max(1,n))
     avg["issues"] = list(set(avg["issues"]))
     return avg
 
@@ -238,7 +232,7 @@ if user_text:
     else:
         answers = st.session_state.answers
 
-        # 🔹 סיכום דרישות המשתמש
+        # סיכום דרישות
         summary_lines = []
         for s in SLOTS:
             val = answers.get(s.key)
@@ -249,13 +243,13 @@ if user_text:
             st.markdown(summary_text)
         st.session_state.messages.append({"role":"assistant","content":summary_text})
 
-        # 🔹 חיפוש רכבים
+        # חיפוש רכבים
         with st.chat_message("assistant"):
             st.markdown("✅ מחפש רכבים מתאימים בישראל...")
 
         prompt = f"""בהתבסס על הקריטריונים: {json.dumps(answers, ensure_ascii=False)},
 בחר 5 דגמי רכבים יד שנייה הנמכרים בישראל בלבד (יבוא סדיר או מקביל).
-אל תכלול דגמים שלא נמכרים בפועל בישראל.
+ודא שכל דגם נכנס בתקציב {answers.get('budget_min')}–{answers.get('budget_max')} ₪ לפי מחירון ישראלי.
 החזר JSON:
 {{"recommendations":[{{"model":"דגם","why":"נימוק קצר"}}]}}"""
         txt = call_model(prompt)
@@ -279,9 +273,11 @@ if user_text:
 
         results = []
         for model in all_models:
-            results.append(check_model_reliability(model, answers, repeats=3))
+            res = check_model_reliability(model, answers, repeats=3)
+            if res.get("valid", True):
+                results.append(res)
 
-        # 🔹 טבלה מפורטת
+        # טבלה
         table_md = "| דגם | אמינות | ביטוח | דלק | תחזוקה | תיקונים | ירידת ערך | סה\"כ | תקלות |\n|---|---|---|---|---|---|---|---|---|\n"
         best_model = None
         best_total = 10**9
@@ -299,4 +295,4 @@ if user_text:
         st.session_state.messages.append({"role":"assistant","content":final_msg})
 
 st.markdown("---")
-st.caption("האפליקציה בודקת רק דגמים זמינים בישראל, מסכמת את דרישות המשתמש, מבצעת 3 בדיקות ממוצעות לכל דגם, מתקנת ערכים לא הגיוניים, ומחזירה עלויות מפורטות בשקלים חדשים.")
+st.caption("האפליקציה כוללת כפתור התחלה מחדש, שאלה על סוג אוטומט, תמיכה בקלט כמו '20 אלף', ובודקת שכל דגם נכנס לתקציב לפי מחירון ישראלי (לוי יצחק/יד2).")
