@@ -1,140 +1,191 @@
-# -*- coding: utf-8 -*-
-# UsedCarAdvisor – ChatBot-First with In-Chat Questionnaire (Streamlit, single-file)
-# Run: streamlit run app.py
-
 import os
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+import requests
 import streamlit as st
+from openai import OpenAI
 
-# =========================
-# הגדרות בסיסיות
-# =========================
-st.set_page_config(page_title="יועץ רכבים יד 2 – צ'אט עם שאלון", page_icon="🤖🚗", layout="centered")
+# =============================
+# שליפת מפתחות API
+# =============================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
-RTL = """
-<style>
-html, body, [class*="css"] { direction: rtl; text-align: right; }
-.block-container { padding-top: .6rem; max-width: 880px; }
-.stChatMessage { text-align: right; }
-</style>
-"""
-st.markdown(RTL, unsafe_allow_html=True)
+if not OPENAI_API_KEY or not PERPLEXITY_API_KEY:
+    st.error("❌ לא נמצאו מפתחות API. ודא שהגדרת אותם בסיקרטס.")
+    st.stop()
 
-# =========================
-# כפתור התחל מחדש
-# =========================
-if st.sidebar.button("🔄 התחל מחדש"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.experimental_rerun()
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-# =========================
-# Questionnaire slots (מורחב ל~40)
-# =========================
-@dataclass
-class Slot:
-    key: str
-    label: str
-    prompt: str
-    kind: str
-    required: bool = True
-
-SLOTS: List[Slot] = [
-    Slot("budget_min", "תקציב מינימום (₪)", "מה התקציב המינימלי שלך בשקלים?", "int"),
-    Slot("budget_max", "תקציב מקסימום (₪)", "מה התקציב המקסימלי שלך בשקלים?", "int"),
-    Slot("body", "סוג רכב", "איזה סוג רכב אתה מחפש? (לדוגמה: משפחתי, קטן, ג'יפ)", "text"),
-    Slot("character", "אופי רכב", "האם אתה מחפש רכב ספורטיבי או יומיומי?", "text"),
-    Slot("usage", "שימוש עיקרי", "השימוש העיקרי יהיה בעיר, בין-עירוני או שטח?", "text"),
-    Slot("priority", "עדיפות מרכזית", "מה הכי חשוב לך – אמינות, נוחות, ביצועים או עיצוב?", "text"),
-    Slot("passengers", "מספר נוסעים ממוצע", "כמה נוסעים ייסעו ברכב?", "int"),
-    Slot("fuel", "סוג דלק", "איזה סוג דלק תעדיף – בנזין, דיזל, היברידי או חשמלי?", "text"),
-    Slot("year_min", "שנת ייצור מינימלית", "מאיזו שנת ייצור מינימלית תרצה?", "int"),
-    Slot("km_per_year", "ק\"מ לשנה", "כמה ק\"מ אתה נוסע בערך בשנה?", "int"),
-    Slot("gearbox", "תיבת הילוכים", "אוטומט או ידני?", "text"),
-    Slot("gearbox_type", "סוג גיר אוטומט", "אם אוטומט – פלנטרי, רובוטי או CVT?", "text", required=False),
-    Slot("region", "אזור בארץ", "באיזה אזור בארץ אתה גר?", "text"),
-    Slot("engine_size", "נפח מנוע", "מה נפח המנוע המועדף עליך (סמ\"ק)?", "int"),
-    Slot("turbo", "טורבו", "האם אתה מחפש מנוע עם טורבו או בלי טורבו?", "text"),
-
-    # שאלות נוספות לדיוק
-    Slot("max_km", "קילומטראז' מקסימלי", "מה הקילומטראז' המקסימלי לרכב שתרצה?", "int"),
-    Slot("brand_pref", "מותג מועדף", "האם יש מותג מועדף עבורך?", "text", required=False),
-    Slot("color_pref", "צבע מועדף", "יש צבע מועדף או לא חשוב?", "text", required=False),
-    Slot("doors", "מספר דלתות", "כמה דלתות תרצה ברכב?", "int", required=False),
-    Slot("safety", "בטיחות", "האם חשוב לך מערכות בטיחות מתקדמות?", "text"),
-    Slot("multimedia", "מולטימדיה", "חשוב לך CarPlay/Android Auto?", "text"),
-    Slot("warranty", "אחריות", "האם חשוב לך רכב עם אחריות יבואן קיימת?", "text"),
-    Slot("depreciation", "ירידת ערך", "כמה חשובה לך ירידת הערך?", "text"),
-    Slot("insurance_importance", "עלות ביטוח", "עד כמה חשוב לך שהביטוח יהיה זול?", "text"),
-    Slot("age_driver", "גיל נהג", "בן כמה הנהג העיקרי?", "int"),
-    Slot("ownership_time", "תקופת החזקה", "כמה זמן מתוכנן להחזיק את הרכב?", "text"),
-    Slot("trunk", "תא מטען", "האם חשוב לך תא מטען גדול?", "text"),
-    Slot("fuel_efficiency", "חסכון דלק", "האם חשוב לך רכב חסכוני מאוד בדלק?", "text"),
-    Slot("daily_trip", "נסיעות יומיומיות", "נסיעות קצרות או ארוכות ביום?", "text"),
-    Slot("performance", "ביצועים", "האם חשוב לך מנוע חזק?", "text"),
-    Slot("resale_value", "שמירת ערך", "כמה חשוב לך שהרכב ישמור על ערכו?", "text"),
-    Slot("daily_hours", "שעות נהיגה ביום", "כמה שעות בממוצע אתה נוהג ביום?", "int"),
-    Slot("equipment", "אבזור", "חשוב לך רכב מאובזר (גג נפתח, מצלמות, חיישנים)?", "text"),
-    Slot("reliability_type", "סוג אמינות", "האם חשוב לך מותג עם אמינות מוכחת (יפני/קוריאני) או מוכן לקחת סיכון?", "text"),
-    Slot("annual_tax", "עלות טסט", "עד כמה קריטית עבורך עלות אגרת הרישוי?", "text"),
-    Slot("parking_difficulty", "חניה", "האם יש לך קושי עם רכב גדול בעיר (חניה)?", "text"),
-    Slot("new_vs_old", "חדש מול ישן", "מה חשוב יותר: חדש יחסית או חזק/מאובזר יותר גם אם ישן?", "text"),
-    Slot("service", "שירות מוסכים", "כמה חשוב לך שירות ומוסכים של יבואן גדול?", "text"),
-    Slot("tow_option", "גרירה", "האם חשוב לך אפשרות גרירת נגרר/קרוואן?", "text"),
-    Slot("light_offroad", "שטח קל", "האם חשוב לך שהרכב יתאים לשטח קל?", "text"),
+# =============================
+# 40 שאלות
+# =============================
+questions = [
+    "מה טווח התקציב שלך לרכב?",
+    "מה התקציב המינימלי שלך בשקלים?",
+    "מה התקציב המקסימלי שלך בשקלים?",
+    "כמה קילומטרים אתה נוסע בממוצע בחודש?",
+    "האם הרכב מיועד בעיקר לנסיעות עירוניות או בין-עירוניות?",
+    "כמה אנשים יושבים בדרך כלל ברכב?",
+    "האם אתה זקוק לתא מטען גדול?",
+    "אתה מתכנן לנסוע הרבה עם ציוד כבד או גרירה?",
+    "אתה מעדיף רכב בנזין, דיזל, היברידי או חשמלי?",
+    "האם חסכון בדלק קריטי עבורך?",
+    "עד כמה חשובים לך ביצועים (כוח מנוע, תאוצה)?",
+    "מה רמת הבטיחות המינימלית שאתה דורש (כוכבי בטיחות, מערכות מתקדמות)?",
+    "האם חשוב לך מערכות עזר מתקדמות (בלימה אוטונומית, בקרת שיוט אדפטיבית)?",
+    "אתה מעדיף רכב חדש או יד שנייה?",
+    "כמה שנים אתה מתכנן להחזיק ברכב?",
+    "כמה חשוב לך שמירת ערך (ירידת ערך איטית)?",
+    "איזה גודל רכב אתה מחפש (קטן, משפחתי, ג'יפון, SUV, טנדר)?",
+    "האם יש מגבלת חניה/גודל באזור המגורים שלך?",
+    "מהי רמת הגימור שחשובה לך (בסיסי, בינוני, גבוה)?",
+    "עד כמה חשוב לך נוחות בנסיעות ארוכות?",
+    "יש העדפה ליצרן/מותג מסוים?",
+    "יש העדפה למדינה יצרנית (יפן, גרמניה, קוריאה וכו')?",
+    "אתה מחפש רכב אמין מאוד עם תחזוקה זולה או מוכן להשקיע בתחזוקה גבוהה יותר?",
+    "כמה חשוב לך שהרכב יהיה חדשני מבחינת טכנולוגיה?",
+    "האם חשוב לך חיבורי מולטימדיה (CarPlay/Android Auto)?",
+    "האם חשוב לך מושבים חשמליים/עור/אוורור?",
+    "מהי רמת רעש סבירה מבחינתך בנסיעה?",
+    "כמה חשוב לך בידוד רעשים?",
+    "יש צורך ביכולות שטח (4x4)?",
+    "אתה מתכנן לנסוע בעיקר לבד או עם משפחה?",
+    "יש לך ילדים קטנים? (דרוש Isofix, דלתות רחבות)",
+    "מה תדירות הנסיעות הארוכות שלך?",
+    "מהי רמת התקציב השוטף שאתה מוכן להשקיע בביטוח וטיפולים?",
+    "יש לך העדפה לידני/אוטומטי?",
+    "כמה חשוב לך עיצוב הרכב (1-10)?",
+    "מה טווח השנים של הרכב שתרצה (למשל 2015 ומעלה)?",
+    "כמה חשוב לך לוח מחוונים דיגיטלי?",
+    "האם תעדיף רכב עם אחריות יצרן עדיין בתוקף?",
+    "כמה חשוב לך צריכת דלק אמיתית לעומת נתוני יצרן?",
+    "יש משהו נוסף שחשוב לציין?"
 ]
-REQUIRED_KEYS = [s.key for s in SLOTS if s.required]
 
-# =========================
-# App state
-# =========================
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role":"assistant","content":"היי! אני היועץ לרכבים יד 2. נתחיל בשאלה קצרה – מה התקציב המינימלי שלך בשקלים?"}
-    ]
-if "answers" not in st.session_state:
-    st.session_state.answers = {}
-if "last_ask" not in st.session_state:
-    st.session_state.last_ask = None
+# =============================
+# פונקציות Pipeline
+# =============================
 
-# =========================
-# Display history
-# =========================
-st.markdown("## 🤖 יועץ רכבים – צ'אט עם שאלון")
-for m in st.session_state.messages:
-    with st.chat_message("assistant" if m["role"]=="assistant" else "user"):
-        st.markdown(m["content"])
+def analyze_needs_with_gpt(answers):
+    """שלב 1 – GPT: ניתוח תשובות והצעת רשימת דגמים ראשונית"""
+    prompt = f"""
+    אלו התשובות מהמשתמש:
+    {answers}
 
-# =========================
-# Chat input
-# =========================
-user_text = st.chat_input("כתוב תשובה כאן והקש אנטר...")
+    על בסיס זה, הצע רשימה של 5-7 דגמי רכבים מתאימים לדרישות.
+    החזר רק רשימה נקייה של שמות דגמים, כל אחד בשורה חדשה, ללא הסברים.
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+    return [m.strip() for m in response.choices[0].message.content.split("\n") if m.strip()]
 
-if user_text:
-    st.session_state.messages.append({"role":"user","content":user_text})
-    if st.session_state.get("last_ask"):
-        slot = st.session_state.last_ask
-        st.session_state.answers[slot.key] = user_text.strip()
-        st.session_state.last_ask = None
+def filter_models_for_israel(models):
+    """בודק עם Perplexity אם הדגם נמכר בישראל בכמות מספקת"""
+    url = "https://api.perplexity.ai/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    filtered = []
+    for model_name in models:
+        query = f"האם {model_name} נמכר בישראל בכמות גבוהה יחסית כך שקל למצוא אותו בשוק היד שנייה בישראל? ענה 'כן' או 'לא' בלבד."
+        payload = {
+            "model": "sonar-medium-online",
+            "messages": [
+                {"role": "system", "content": "ענה רק 'כן' או 'לא'."},
+                {"role": "user", "content": query}
+            ]
+        }
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            answer = r.json()["choices"][0]["message"]["content"].strip().lower()
+            if "כן" in answer:
+                filtered.append(model_name)
+        except Exception:
+            pass
+    return filtered
 
-    # בדוק אם יש עוד שאלות
-    missing = [s for s in SLOTS if s.required and s.key not in st.session_state.answers]
-    if missing:
-        nxt = missing[0]
-        st.session_state.last_ask = nxt
-        with st.chat_message("assistant"):
-            st.markdown(nxt.prompt)
-        st.session_state.messages.append({"role":"assistant","content":nxt.prompt})
+def fetch_models_data_with_perplexity(models):
+    """שלב 2 – Perplexity: חיפוש חי על כל דגם"""
+    url = "https://api.perplexity.ai/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    all_data = {}
+    for model_name in models:
+        query = f"מידע עדכני על {model_name} בישראל: אמינות, מחירון יד שנייה, צריכת דלק, יתרונות וחסרונות."
+        payload = {
+            "model": "sonar-medium-online",
+            "messages": [
+                {"role": "system", "content": "תחזיר מידע עובדתי ועדכני בלבד."},
+                {"role": "user", "content": query}
+            ]
+        }
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            all_data[model_name] = r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            all_data[model_name] = "❌ שגיאה בשליפת מידע"
+    return all_data
+
+def final_recommendation_with_gpt(answers, models, models_data):
+    """שלב 3 – GPT: שילוב הכל להמלצה סופית"""
+    text = f"""
+    תשובות המשתמש:
+    {answers}
+
+    דגמים זמינים בישראל:
+    {models}
+
+    מידע עובדתי מ־Perplexity:
+    {models_data}
+
+    צור המלצה סופית בעברית:
+    - הצג 5 דגמים בלבד (אם יש פחות – הצג את מה שנמצא)
+    - הוסף נימוק לכל דגם בהתבסס על הדרישות של המשתמש
+    - השווה יתרונות וחסרונות
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": text}],
+        temperature=0.5,
+    )
+    return response.choices[0].message.content
+
+# =============================
+# Streamlit UI
+# =============================
+st.set_page_config(page_title="Car-Advisor", page_icon="🚗")
+st.title("🚗 Car-Advisor – יועץ רכבים חכם")
+
+with st.form("car_form"):
+    st.write("ענה על השאלון:")
+    answers = {}
+    for q in questions:
+        answers[q] = st.text_input(q, "")
+    submitted = st.form_submit_button("שלח וקבל המלצה")
+
+if submitted:
+    with st.spinner("🤖 GPT בוחר דגמים ראשוניים..."):
+        initial_models = analyze_needs_with_gpt(answers)
+    st.info(f"📋 דגמים ראשוניים: {initial_models}")
+
+    with st.spinner("🇮🇱 מסנן דגמים שלא זמינים בישראל..."):
+        israeli_models = filter_models_for_israel(initial_models)
+
+    if not israeli_models:
+        st.error("❌ לא נמצאו דגמים זמינים בישראל לפי הדרישות שלך.")
     else:
-        # סיכום דרישות
-        answers = st.session_state.answers
-        summary_lines = [f"- {s.label}: {answers.get(s.key)}" for s in SLOTS if answers.get(s.key)]
-        summary_text = "### סיכום דרישותיך\n" + "\n".join(summary_lines)
-        with st.chat_message("assistant"):
-            st.markdown(summary_text)
-        st.session_state.messages.append({"role":"assistant","content":summary_text})
+        st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
 
-        # Placeholder ל-Perplexity
-        with st.chat_message("assistant"):
-            st.markdown("🔎 השאלון הושלם. החלק הבא יתחבר ל־Perplexity API כדי למשוך מחירים ועלויות אמיתיות ולשלוח ל־GPT לעיבוד.")
+        with st.spinner("🌐 שולף מידע חי מ־Perplexity..."):
+            models_data = fetch_models_data_with_perplexity(israeli_models)
+
+        with st.spinner("⚡ יוצר המלצה סופית עם GPT..."):
+            summary = final_recommendation_with_gpt(answers, israeli_models, models_data)
+
+        st.subheader("🔎 ההמלצה הסופית שלך")
+        st.write(summary)
