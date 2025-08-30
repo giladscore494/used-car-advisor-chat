@@ -32,7 +32,7 @@ def safe_perplexity_call(payload):
         return f"שגיאה: {e}"
 
 # =============================
-# שאלון – 40 שאלות (מקוצר כאן)
+# שאלון – 40 שאלות (רק דוגמאות כאן)
 # =============================
 questions = [
     "מה טווח התקציב שלך לרכב?",
@@ -53,15 +53,18 @@ questions = [
 # =============================
 
 def analyze_needs_with_gpt(answers):
-    """שלב 1 – GPT: רשימת דגמים ראשונית"""
+    """שלב 1 – GPT: רשימת דגמים ראשונית (מותאמים לישראל + תקציב)"""
+    min_budget = answers.get("מה התקציב המינימלי שלך בשקלים?", "")
+    max_budget = answers.get("מה התקציב המקסימלי שלך בשקלים?", "")
+
     prompt = f"""
     אלו התשובות מהמשתמש:
     {answers}
 
     החזר רשימה של 5–7 דגמי רכבים מתאימים.
     חשוב:
-    - הצע רק רכבים שנמכרים בישראל בפועל (חדשים או יד שנייה).
-    - אל תציע גרסאות מנוע/תצורה שלא נמכרו בישראל.
+    - הצע רק רכבים שנמכרים בישראל בפועל (יד שנייה).
+    - כלול רק רכבים שהמחירון שלהם ביד שנייה נמצא בטווח {min_budget} עד {max_budget} שקלים.
     - החזר רשימה נקייה: רק שם הדגם, כל דגם בשורה נפרדת, בלי מספרים ובלי הסברים.
     """
     response = client.chat.completions.create(
@@ -80,49 +83,73 @@ def analyze_needs_with_gpt(answers):
             clean_models.append(line)
     return clean_models
 
-def filter_models_for_israel(models):
-    """שלב 2 – סינון לפי זמינות בישראל + מחירון/הערכה"""
+def extract_numbers_from_text(text):
+    """מחלץ מספרים מהטקסט"""
+    numbers = re.findall(r'\d{1,3}(?:[ ,]\d{3})*|\d+', text)
+    clean_numbers = []
+    for n in numbers:
+        try:
+            clean_numbers.append(int(n.replace(",", "").replace(" ", "")))
+        except:
+            pass
+    return clean_numbers
+
+def filter_models_for_israel(models, min_budget, max_budget):
+    """שלב 2 – סינון לפי זמינות בישראל + מחירון אמיתי מול התקציב"""
     filtered, debug_info = [], {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-online",
+            "model": "sonar-medium-chat",
             "messages": [
-                {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל ויש מחירון', 'נפוץ בישראל ויש הערכת מחיר', או 'לא נפוץ בישראל'."},
-                {"role": "user", "content": f"האם {model_name} נמכר בישראל בשוק היד שנייה, והאם יש לו מחירון או לפחות הערכת מחיר?"}
+                {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל, מחירון 12-18 אלף ₪' או 'לא נפוץ בישראל'."},
+                {"role": "user", "content": f"האם {model_name} נמכר בישראל, ומה טווח המחירים האמיתי שלו ביד שנייה?"}
             ]
         }
         answer = safe_perplexity_call(payload)
         debug_info[model_name] = answer
+
         if isinstance(answer, str):
             ans = answer.lower()
             if "לא נפוץ" in ans or "לא נמכר" in ans:
                 continue
-            if any(w in ans for w in ["נפוץ", "נמכר", "קיים", "כן"]) and any(w in ans for w in ["מחיר", "שווי", "הערכה"]):
-                filtered.append(model_name)
+
+            # חילוץ טווח מחיר והשוואה לתקציב
+            nums = extract_numbers_from_text(answer)
+            if len(nums) >= 2:
+                low, high = min(nums), max(nums)
+                if low <= max_budget and high >= min_budget:
+                    filtered.append(model_name)
+            else:
+                # אם לא מצא מספרים אבל כן כתוב נפוץ → נאשר גמיש
+                if "נפוץ" in ans or "נמכר" in ans:
+                    filtered.append(model_name)
+
     return filtered, debug_info
 
 def fetch_models_data_with_perplexity(models, answers):
-    """שלב 3 – Perplexity: נתונים מלאים"""
+    """שלב 2 – Perplexity: נתונים מלאים (10 פרמטרים)"""
     all_data = {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-online",
+            "model": "sonar-medium-chat",
             "messages": [
                 {"role": "system", "content": "החזר מידע עובדתי ותמציתי בלבד, בעברית."},
                 {"role": "user", "content": f"""
                 תשובות המשתמש: {answers}
 
-                הבא מידע עדכני על {model_name} בישראל:
-                - מחירון ממוצע ליד שנייה
-                - עלות ביטוח ממוצעת
-                - אגרת רישוי וטסט שנתית
-                - עלות טיפולים שנתית ממוצעת
-                - תקלות נפוצות
-                - צריכת דלק אמיתית
-                - ירידת ערך ממוצעת
-                - דירוג בטיחות
-                - זמינות חלפים ועלותם
-                - ביקוש בשוק היד שנייה
+                הבא מידע עדכני על {model_name} בישראל, לפי:
+                1. טווח מחירון ממוצע ביד שנייה (מספרים!)
+                2. זמינות ונפוצות בישראל
+                3. עלות ביטוח ממוצעת
+                4. אגרת רישוי/טסט שנתית
+                5. תחזוקה שנתית ממוצעת
+                6. תקלות נפוצות ידועות
+                7. צריכת דלק אמיתית
+                8. ירידת ערך ממוצעת
+                9. דירוג בטיחות
+                10. זמינות חלפים בישראל
+
+                החזר תשובה כרשימה ממוספרת 1–10 בלבד.
                 """}
             ]
         }
@@ -131,7 +158,7 @@ def fetch_models_data_with_perplexity(models, answers):
     return all_data
 
 def final_recommendation_with_gpt(answers, models, models_data):
-    """שלב 4 – GPT: המלצה סופית"""
+    """שלב 3 – GPT: המלצה סופית"""
     text = f"""
     תשובות המשתמש:
     {answers}
@@ -146,7 +173,7 @@ def final_recommendation_with_gpt(answers, models, models_data):
     - הצג עד 5 דגמים בלבד
     - הוסף נימוק אישי לכל דגם
     - השווה יתרונות וחסרונות
-    - כלול שיקולים כלכליים ושימושיים
+    - כלול שיקולים כלכליים (מחירון, ביטוח, תחזוקה) ושימושיים (בטיחות, נוחות, אמינות)
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -173,16 +200,26 @@ if submitted:
         initial_models = analyze_needs_with_gpt(answers)
     st.info(f"📋 דגמים ראשוניים: {initial_models}")
 
-    with st.spinner("🇮🇱 מסנן דגמים (ישראל + מחירון/הערכה)..."):
-        israeli_models, debug_info = filter_models_for_israel(initial_models)
+    # תקציב מהשאלון
+    try:
+        min_budget = int(answers.get("מה התקציב המינימלי שלך בשקלים?", "0").replace("אלף","000").replace(" ",""))
+    except:
+        min_budget = 0
+    try:
+        max_budget = int(answers.get("מה התקציב המקסימלי שלך בשקלים?", "999999").replace("אלף","000").replace(" ",""))
+    except:
+        max_budget = 999999
+
+    with st.spinner("🇮🇱 מסנן דגמים מול מחירון האמיתי..."):
+        israeli_models, debug_info = filter_models_for_israel(initial_models, min_budget, max_budget)
 
     with st.expander("🔎 תשובות Perplexity לסינון"):
         st.write(debug_info)
 
     if not israeli_models:
-        st.error("❌ לא נמצאו דגמים זמינים בישראל עם מחירון או הערכת מחיר.")
+        st.error("❌ לא נמצאו דגמים זמינים בישראל בטווח המחירים שציינת.")
     else:
-        st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
+        st.success(f"✅ דגמים זמינים בישראל בתקציב: {israeli_models}")
 
         with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity..."):
             models_data = fetch_models_data_with_perplexity(israeli_models, answers)
