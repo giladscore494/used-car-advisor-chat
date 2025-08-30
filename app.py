@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import streamlit as st
 from openai import OpenAI
@@ -66,7 +67,7 @@ questions = [
 # =============================
 
 def analyze_needs_with_gpt(answers):
-    """שלב 1 – GPT: רשימת דגמים ראשונית (מותאמים לישראל בלבד)"""
+    """שלב 1 – GPT: רשימת דגמים ראשונית (נקייה, מותאמים לישראל בלבד)"""
     prompt = f"""
     אלו התשובות מהמשתמש:
     {answers}
@@ -75,24 +76,31 @@ def analyze_needs_with_gpt(answers):
     חשוב:
     - הצע רק רכבים שנמכרים בישראל בפועל (חדשים או יד שנייה).
     - אל תציע גרסאות מנוע/תצורה שלא נמכרו בישראל.
-    - החזר את הרשימה בצורה ברורה – כל דגם בשורה נפרדת.
+    - החזר רשימה נקייה: רק שם הדגם, כל דגם בשורה נפרדת, בלי מספרים ובלי הסברים.
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
+        temperature=0.2,
     )
     text = response.choices[0].message.content
-    return [line.strip("-• \t") for line in text.split("\n") if line.strip()]
+    clean_models = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[0-9\.\-\•\*\s]+", "", line)
+        if len(line.split()) <= 6:  # מסנן שורות עם הסברים ארוכים
+            clean_models.append(line)
+    return clean_models
 
 def filter_models_for_israel(models):
-    """שלב 2 – סינון גמיש לפי זמינות בישראל + מחירון או הערכת מחיר"""
+    """שלב 2 – סינון לפי זמינות בישראל + מחירון/הערכה"""
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
-    filtered = []
-    debug_info = {}
+    filtered, debug_info = [], {}
     for model_name in models:
-        query = f"האם {model_name} נמכר בישראל בשוק היד שנייה, והאם יש לו מחירון או לפחות הערכת מחיר? ענה בקצרה."
+        query = f"האם {model_name} נמכר בישראל בשוק היד שנייה, והאם יש לו מחירון או לפחות הערכת מחיר?"
         payload = {
             "model": "sonar-medium-online",
             "messages": [
@@ -104,7 +112,7 @@ def filter_models_for_israel(models):
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             answer = r.json()["choices"][0]["message"]["content"].strip().lower()
             debug_info[model_name] = answer
-            if ("לא נפוץ" in answer) or ("לא נמכר" in answer):
+            if "לא" in answer and "נפוץ" in answer:
                 continue
             if any(w in answer for w in ["נפוץ", "נמכר", "קיים", "כן"]) and any(w in answer for w in ["מחיר", "שווי", "הערכה"]):
                 filtered.append(model_name)
@@ -112,14 +120,16 @@ def filter_models_for_israel(models):
             debug_info[model_name] = f"שגיאה: {e}"
     return filtered, debug_info
 
-def fetch_models_data_with_perplexity(models):
-    """שלב 3 – Perplexity: שליפת נתונים מורחבת"""
+def fetch_models_data_with_perplexity(models, answers):
+    """שלב 3 – Perplexity: שליפת נתונים מפורטים לפי 10 פרמטרים"""
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
     all_data = {}
     for model_name in models:
         query = f"""
-        הבא מידע עדכני על {model_name} בישראל, כולל:
+        תשובות המשתמש: {answers}
+
+        הבא מידע עדכני על {model_name} בישראל, לפי הפרמטרים:
         - מחירון ממוצע ליד שנייה
         - עלות ביטוח ממוצעת
         - אגרת רישוי וטסט שנתית
@@ -146,7 +156,7 @@ def fetch_models_data_with_perplexity(models):
     return all_data
 
 def final_recommendation_with_gpt(answers, models, models_data):
-    """שלב 4 – GPT: המלצה סופית"""
+    """שלב 4 – GPT: שילוב הכל להמלצה סופית"""
     text = f"""
     תשובות המשתמש:
     {answers}
@@ -154,14 +164,14 @@ def final_recommendation_with_gpt(answers, models, models_data):
     דגמים זמינים בישראל:
     {models}
 
-    נתונים על כל דגם:
+    נתוני Perplexity:
     {models_data}
 
     צור המלצה סופית בעברית:
     - הצג עד 5 דגמים בלבד
     - הוסף נימוק אישי לכל דגם
     - השווה יתרונות וחסרונות
-    - כלול שיקולים כלכליים (ביטוח, מחירון, תחזוקה) ושיקולי שימוש (בטיחות, אמינות, נוחות)
+    - כלול שיקולים כלכליים (מחירון, ביטוח, תחזוקה) ושיקולי שימוש (בטיחות, אמינות, נוחות)
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -200,7 +210,7 @@ if submitted:
         st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
 
         with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity..."):
-            models_data = fetch_models_data_with_perplexity(israeli_models)
+            models_data = fetch_models_data_with_perplexity(israeli_models, answers)
 
         with st.spinner("⚡ יוצר המלצה סופית עם GPT..."):
             summary = final_recommendation_with_gpt(answers, israeli_models, models_data)
