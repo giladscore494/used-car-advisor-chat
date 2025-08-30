@@ -32,7 +32,7 @@ def safe_perplexity_call(payload):
         return f"שגיאה: {e}"
 
 # =============================
-# שאלון – 40 שאלות (רק דוגמאות כאן)
+# שאלון – 40 שאלות (מקוצר כאן)
 # =============================
 questions = [
     "מה טווח התקציב שלך לרכב?",
@@ -45,7 +45,7 @@ questions = [
     "אתה מתכנן לנסוע הרבה עם ציוד כבד או גרירה?",
     "אתה מעדיף רכב בנזין, דיזל, היברידי או חשמלי?",
     "האם חסכון בדלק קריטי עבורך?",
-    # ... (שאר ה־40 שאלות כמו קודם)
+    # ... (שאר השאלות)
 ]
 
 # =============================
@@ -99,7 +99,7 @@ def filter_models_for_israel(models, min_budget, max_budget):
     filtered, debug_info = [], {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-chat",
+            "model": "sonar-medium-latest",  # המודל המתוקן
             "messages": [
                 {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל, מחירון 12-18 אלף ₪' או 'לא נפוץ בישראל'."},
                 {"role": "user", "content": f"האם {model_name} נמכר בישראל, ומה טווח המחירים האמיתי שלו ביד שנייה?"}
@@ -131,7 +131,7 @@ def fetch_models_data_with_perplexity(models, answers):
     all_data = {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-chat",
+            "model": "sonar-medium-latest",  # המודל המתוקן
             "messages": [
                 {"role": "system", "content": "החזר מידע עובדתי ותמציתי בלבד, בעברית."},
                 {"role": "user", "content": f"""
