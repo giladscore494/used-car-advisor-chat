@@ -20,26 +20,6 @@ if not OPENAI_API_KEY or not PERPLEXITY_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =============================
-# Cache פנימי (24 שעות)
-# =============================
-cache = {}
-
-def make_key(answers):
-    return f"{answers['budget_min']}-{answers['budget_max']}-{answers['engine']}-{answers['usage']}-{answers['size']}-{answers['car_type']}-{answers['turbo']}-{answers['gearbox']}-{answers['engine_size']}-{answers['year_range']}"
-
-def get_from_cache(answers, max_age_hours=24):
-    key = make_key(answers)
-    if key in cache:
-        ts, result = cache[key]
-        if time.time() - ts < max_age_hours * 3600:
-            return result
-    return None
-
-def save_to_cache(answers, result):
-    key = make_key(answers)
-    cache[key] = (time.time(), result)
-
-# =============================
 # קריאה בטוחה ל-Perplexity
 # =============================
 def safe_perplexity_call(payload):
@@ -55,64 +35,18 @@ def safe_perplexity_call(payload):
         return f"שגיאה: {e}"
 
 # =============================
-# שלב 1 – GPT מציע דגמים ראשוניים
+# שלב 1 – Perplexity מחזיר טבלה מלאה
 # =============================
-def analyze_needs_with_gpt(answers):
-    prompt = f"""
-    המשתמש נתן את ההעדפות:
-    {answers}
-
-    החזר רשימה של 7–10 דגמי רכבים אפשריים (שם בלבד).
-    אל תוסיף מפרטים (שנה/מחיר/מנוע).
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
-    text = response.choices[0].message.content
-    models = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line or ":" in line:
-            continue
-        line = re.sub(r"^[0-9\.\-\•\*\s]+", "", line)
-        if line:
-            models.append(line)
-    return models
-
-# =============================
-# שלב 2 – סינון מוקדם ב-GPT (Pre-Filter)
-# =============================
-def prefilter_models_with_gpt(models, answers):
-    prompt = f"""
-    דגמים מוצעים: {models}
-    תנאי סינון: תקציב {answers['budget_min']}–{answers['budget_max']} ₪,
-    מנוע {answers['engine']} {answers['engine_size']} סמ״ק,
-    שנות ייצור {answers['year_range']},
-    גיר {answers['gearbox']}, טורבו {answers['turbo']}.
-
-    החזר רשימה קצרה של 3–4 דגמים רלוונטיים בלבד.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-    )
-    text = response.choices[0].message.content
-    return [re.sub(r"^[0-9\.\-\•\*\s]+", "", l.strip()) for l in text.split("\n") if l.strip()]
-
-# =============================
-# שלב 3 – בקשה אחת לפרפליסיטי (Batch JSON)
-# =============================
-def fetch_models_data_with_perplexity(models, answers):
-    models_str = ", ".join(models)
+def fetch_models_data_with_perplexity(answers):
     payload = {
         "model": "sonar-pro",
         "messages": [
             {"role": "system", "content": "ענה בפורמט JSON בלבד. אל תוסיף טקסט חופשי."},
             {"role": "user", "content": f"""
-            הבא מידע עדכני על הדגמים הבאים בישראל: {models_str}.
+            המשתמש נתן את ההעדפות הבאות:
+            {answers}
+
+            הצע עד 7 דגמים מתאימים שנמכרים בישראל בטווח התקציב {answers['budget_min']}–{answers['budget_max']} ₪.
 
             עבור כל דגם החזר בפורמט JSON עם השדות:
             {{
@@ -129,6 +63,7 @@ def fetch_models_data_with_perplexity(models, answers):
                  "parts_availability": "זמינות חלפים בישראל"
               }}
             }}
+
             אל תוסיף טקסט מעבר ל-JSON.
             """}
         ]
@@ -140,33 +75,31 @@ def fetch_models_data_with_perplexity(models, answers):
         return {"error": "JSON לא תקין", "raw": answer}
 
 # =============================
-# שלב 4 – GPT מסכם המלצה
+# שלב 2 – GPT מסנן ומסכם
 # =============================
-def final_recommendation_with_gpt(answers, models, models_data):
+def final_recommendation_with_gpt(answers, models_data):
     text = f"""
     תשובות המשתמש:
     {answers}
 
-    דגמים זמינים:
-    {models}
-
-    נתוני Perplexity:
+    נתוני הדגמים מ-Perplexity:
     {models_data}
 
     צור המלצה בעברית:
-    - עד 5 דגמים בלבד
-    - יתרונות וחסרונות
-    - נימוקים אישיים לפי התקציב, סוג מנוע, שנות ייצור, טורבו וגיר
+    - כלול עד 5 דגמים בלבד
+    - הסבר יתרונות וחסרונות
+    - הסבר התאמה אישית לפי התקציב, מנוע, שנות ייצור, נוחות, חסכוניות
+    - אל תמציא מחירים או נתונים חדשים, הסתמך רק על המידע שניתן
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": text}],
-        temperature=0.5,
+        temperature=0.4,
     )
     return response.choices[0].message.content
 
 # =============================
-# UI
+# Streamlit UI
 # =============================
 st.set_page_config(page_title="Car-Advisor", page_icon="🚗")
 st.title("🚗 Car-Advisor – יועץ רכבים חכם")
@@ -202,42 +135,31 @@ with st.form("car_form"):
     submitted = st.form_submit_button("שלח וקבל המלצה")
 
 if submitted:
-    cached = get_from_cache(answers)
-    if cached:
-        st.success("✅ תוצאה מהמאגר")
-        summary = cached
-    else:
-        with st.spinner("🤖 מחפש דגמים מתאימים..."):
-            initial = analyze_needs_with_gpt(answers)
-            st.info(f"📋 דגמים ראשוניים: {initial}")
+    with st.spinner("🌐 Perplexity בודק דגמים מתאימים..."):
+        models_data = fetch_models_data_with_perplexity(answers)
 
-            filtered = prefilter_models_with_gpt(initial, answers)
-            st.success(f"✅ דגמים לאחר סינון מוקדם: {filtered}")
+    try:
+        df = pd.DataFrame(models_data).T
+        df.rename(columns=COLUMN_TRANSLATIONS, inplace=True)
+        st.subheader("📊 השוואת נתונים בין הדגמים")
+        st.dataframe(df, use_container_width=True)
 
-            data = fetch_models_data_with_perplexity(filtered, answers)
+        # כפתור הורדה ל-CSV
+        csv = df.to_csv(index=True, encoding="utf-8-sig")
+        st.download_button("⬇️ הורד כ-CSV", csv, "car_advisor.csv", "text/csv")
 
-            try:
-                df = pd.DataFrame(data).T
-                df.rename(columns=COLUMN_TRANSLATIONS, inplace=True)
-                st.subheader("📊 השוואת נתונים")
-                st.dataframe(df, use_container_width=True)
-                # כפתור הורדה ל-CSV
-                csv = df.to_csv(index=True, encoding="utf-8-sig")
-                st.download_button("⬇️ הורד כ-CSV", csv, "car_advisor.csv", "text/csv")
-            except:
-                st.warning("⚠️ בעיה בנתוני JSON")
-                st.write(data)
+    except:
+        st.warning("⚠️ בעיה בנתוני JSON")
+        st.write(models_data)
 
-            with st.spinner("⚡ מסכם המלצה..."):
-                summary = final_recommendation_with_gpt(answers, filtered, data)
+    with st.spinner("⚡ GPT מסנן ומסכם..."):
+        summary = final_recommendation_with_gpt(answers, models_data)
 
-            st.subheader("🔎 ההמלצה הסופית שלך")
-            st.write(summary)
+    st.subheader("🔎 ההמלצה הסופית שלך")
+    st.write(summary)
 
-            save_to_cache(answers, summary)
-
+    # הערות חשובות
     st.markdown("---")
-    st.markdown("⚠️ **חשוב לדעת:**")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(
