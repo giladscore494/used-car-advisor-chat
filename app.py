@@ -46,7 +46,7 @@ def safe_perplexity_call(payload):
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r = requests.post(url, headers=headers, json=payload, timeout=90)
         data = r.json()
         if "choices" not in data:
             return f"שגיאת API: {data}"
@@ -54,27 +54,15 @@ def safe_perplexity_call(payload):
     except Exception as e:
         return f"שגיאה: {e}"
 
-def extract_numbers_from_text(text):
-    numbers = re.findall(r'\d{1,3}(?:[ ,]\d{3})*|\d+', text)
-    return [int(n.replace(",", "").replace(" ", "")) for n in numbers]
-
 # =============================
 # שלב 1 – GPT מציע דגמים ראשוניים
 # =============================
 def analyze_needs_with_gpt(answers):
     prompt = f"""
-    המשתמש נתן את ההעדפות:
     {answers}
 
-    החזר רשימה של 5–7 דגמי רכבים מתאימים.
-    דרישות חובה:
-    - רק דגמים שנמכרים בישראל ביד שנייה.
-    - רק רכבים שהמחירון שלהם ביד שנייה נמצא בטווח {answers['budget_min']}–{answers['budget_max']} ₪.
-    - מנוע {answers['engine']}, נפח {answers['engine_size']} סמ״ק.
-    - שנות ייצור: {answers['year_range']}.
-    - סוג רכב מועדף: {answers['car_type']}
-    - העדפת תיבת הילוכים: {answers['gearbox']}
-    - העדפת טורבו: {answers['turbo']}
+    החזר רשימה נקייה של 5–7 דגמי רכבים (שם הדגם בלבד).
+    אל תוסיף מפרטים (מנוע/שנה/מחיר).
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -82,53 +70,64 @@ def analyze_needs_with_gpt(answers):
         temperature=0.2,
     )
     text = response.choices[0].message.content
-    clean_models = [re.sub(r"^[0-9\.\-\•\*\s]+", "", line.strip()) for line in text.split("\n") if line.strip()]
+    clean_models = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line: 
+            continue
+        if ":" in line or "מנוע" in line or "מחיר" in line or "שנה" in line:
+            continue
+        if line.startswith("בהתבסס") or line.startswith("אנא"):
+            continue
+        line = re.sub(r"^[0-9\.\-\•\*\s]+", "", line)
+        if line:
+            clean_models.append(line)
     return clean_models
 
 # =============================
-# שלב 2 – סינון עם Perplexity
+# שלב 2 – סינון בסיסי מול ישראל
 # =============================
 def filter_models_for_israel(models, min_budget, max_budget, engine, gearbox, turbo, engine_size, year_range):
     filtered, debug_info = [], {}
-    for model_name in models:
-        payload = {
-            "model": "sonar",
-            "messages": [
-                {"role": "system", "content": "החזר תשובה בעברית ובקצרה בלבד."},
-                {"role": "user", "content": f"האם {model_name} נמכר בישראל ביד שנייה עם מנוע {engine} {engine_size} סמ\"ק, גיר {gearbox}, {'טורבו' if turbo=='כן' else 'ללא טורבו'}, שנות ייצור {year_range}? ומה טווח המחירים האמיתי שלו?"}
-            ]
-        }
-        answer = safe_perplexity_call(payload)
-        debug_info[model_name] = answer
+    models_str = ", ".join(models)
+    payload = {
+        "model": "sonar",
+        "messages": [
+            {"role": "system", "content": "ענה בקצרה מאוד בעברית."},
+            {"role": "user", "content": f"""
+            האם הדגמים הבאים נמכרים בישראל ביד שנייה?
+            {models_str}
 
-        if isinstance(answer, str):
-            ans = answer.lower()
-            if "לא נפוץ" in ans or "לא נמכר" in ans:
-                continue
-            nums = extract_numbers_from_text(answer)
-            if len(nums) >= 2:
-                low, high = min(nums), max(nums)
-                if low <= max_budget and high >= min_budget:
-                    filtered.append(model_name)
-            else:
-                if "נפוץ" in ans or "נמכר" in ans:
-                    filtered.append(model_name)
+            דרישות: מנוע {engine} {engine_size} סמ״ק, גיר {gearbox}, {"טורבו" if turbo=="כן" else "ללא טורבו"}, שנות ייצור {year_range}.
+            ציין גם טווחי מחירים. 
+            """}
+        ]
+    }
+    answer = safe_perplexity_call(payload)
+    debug_info["batch_filter"] = answer
+
+    # נסה לזהות רק דגמים שנמצאו "נמכרים"
+    for m in models:
+        if m.lower() in answer.lower() and ("נפוץ" in answer or "נמכר" in answer or "מחיר" in answer):
+            filtered.append(m)
+
     return filtered, debug_info
 
 # =============================
-# שלב 3 – נתונים מלאים ב-JSON
+# שלב 3 – נתונים מלאים ב-Batch JSON
 # =============================
 def fetch_models_data_with_perplexity(models, answers):
-    all_data = {}
-    for model_name in models:
-        payload = {
-            "model": "sonar-pro",
-            "messages": [
-                {"role": "system", "content": "ענה בפורמט JSON בלבד. אל תוסיף טקסט חופשי."},
-                {"role": "user", "content": f"""
-                הבא מידע עדכני על {model_name} בישראל.
-                החזר תשובה בפורמט JSON עם השדות הבאים:
-                {{
+    models_str = ", ".join(models)
+    payload = {
+        "model": "sonar-pro",
+        "messages": [
+            {"role": "system", "content": "ענה בפורמט JSON בלבד. אל תוסיף טקסט חופשי."},
+            {"role": "user", "content": f"""
+            הבא מידע עדכני על הדגמים הבאים בישראל: {models_str}.
+
+            החזר תשובה בפורמט JSON עם המבנה:
+            {{
+              "Model Name": {{
                  "price_range": "טווח מחירון ממוצע ביד שנייה",
                  "availability": "זמינות ונפוצות בישראל",
                  "insurance": "עלות ביטוח ממוצעת",
@@ -139,17 +138,20 @@ def fetch_models_data_with_perplexity(models, answers):
                  "depreciation": "ירידת ערך ממוצעת",
                  "safety": "דירוג בטיחות",
                  "parts_availability": "זמינות חלפים בישראל"
-                }}
-                """}
-            ]
-        }
-        answer = safe_perplexity_call(payload)
-        try:
-            parsed = json.loads(answer)
-        except:
-            parsed = {"price_range": answer}  # fallback
-        all_data[model_name] = parsed
-    return all_data
+              }}
+            }}
+
+            עבור כל דגם מהרשימה.
+            אל תוסיף טקסט מעבר ל-JSON.
+            """}
+        ]
+    }
+    answer = safe_perplexity_call(payload)
+    try:
+        parsed = json.loads(answer)
+    except Exception as e:
+        parsed = {"error": str(e), "raw": answer}
+    return parsed
 
 # =============================
 # שלב 4 – GPT מסכם המלצה
@@ -231,13 +233,17 @@ if submitted:
         else:
             st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
 
-            with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity..."):
+            with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity (Batch)..."):
                 models_data = fetch_models_data_with_perplexity(israeli_models, answers)
 
             # טבלת השוואה
-            df = pd.DataFrame(models_data).T
-            st.subheader("📊 השוואת נתונים בין הדגמים")
-            st.dataframe(df)
+            try:
+                df = pd.DataFrame(models_data).T
+                st.subheader("📊 השוואת נתונים בין הדגמים")
+                st.dataframe(df)
+            except:
+                st.warning("⚠️ לא ניתן להציג טבלה, הנתונים לא בפורמט JSON מלא")
+                st.write(models_data)
 
             with st.spinner("⚡ יוצר המלצה סופית עם GPT..."):
                 summary = final_recommendation_with_gpt(answers, israeli_models, models_data)
