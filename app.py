@@ -99,7 +99,7 @@ def filter_models_for_israel(models, min_budget, max_budget):
     filtered, debug_info = [], {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-latest",  # המודל המתוקן
+            "model": "sonar",  # מודל מהיר לתשובות קצרות
             "messages": [
                 {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל, מחירון 12-18 אלף ₪' או 'לא נפוץ בישראל'."},
                 {"role": "user", "content": f"האם {model_name} נמכר בישראל, ומה טווח המחירים האמיתי שלו ביד שנייה?"}
@@ -131,7 +131,7 @@ def fetch_models_data_with_perplexity(models, answers):
     all_data = {}
     for model_name in models:
         payload = {
-            "model": "sonar-medium-latest",  # המודל המתוקן
+            "model": "sonar-pro",  # מודל חזק יותר להחזיר מידע מפורט
             "messages": [
                 {"role": "system", "content": "החזר מידע עובדתי ותמציתי בלבד, בעברית."},
                 {"role": "user", "content": f"""
