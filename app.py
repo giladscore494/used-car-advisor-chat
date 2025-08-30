@@ -16,7 +16,7 @@ if not OPENAI_API_KEY or not PERPLEXITY_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =============================
-# 40 שאלות
+# שאלון – 40 שאלות
 # =============================
 questions = [
     "מה טווח התקציב שלך לרכב?",
@@ -66,73 +66,87 @@ questions = [
 # =============================
 
 def analyze_needs_with_gpt(answers):
-    """שלב 1 – GPT: ניתוח תשובות והצעת רשימת דגמים ראשונית"""
+    """שלב 1 – GPT: רשימת דגמים ראשונית (מותאמים לישראל בלבד)"""
     prompt = f"""
     אלו התשובות מהמשתמש:
     {answers}
 
-    על בסיס זה, הצע רשימה של 5-7 דגמי רכבים מתאימים לדרישות.
-    החזר רק רשימה נקייה של שמות דגמים, כל אחד בשורה חדשה, ללא הסברים.
+    החזר רשימה של 5–7 דגמי רכבים מתאימים.
+    חשוב:
+    - הצע רק רכבים שנמכרים בישראל בפועל (חדשים או יד שנייה).
+    - אל תציע גרסאות מנוע/תצורה שלא נמכרו בישראל.
+    - החזר את הרשימה בצורה ברורה – כל דגם בשורה נפרדת.
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
     )
-    return [m.strip() for m in response.choices[0].message.content.split("\n") if m.strip()]
+    text = response.choices[0].message.content
+    return [line.strip("-• \t") for line in text.split("\n") if line.strip()]
 
 def filter_models_for_israel(models):
-    """בודק עם Perplexity אם הדגם נמכר בישראל בכמות מספקת"""
+    """שלב 2 – סינון גמיש לפי זמינות בישראל + מחירון או הערכת מחיר"""
     url = "https://api.perplexity.ai/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
     filtered = []
+    debug_info = {}
     for model_name in models:
-        query = f"האם {model_name} נמכר בישראל בכמות גבוהה יחסית כך שקל למצוא אותו בשוק היד שנייה בישראל? ענה 'כן' או 'לא' בלבד."
+        query = f"האם {model_name} נמכר בישראל בשוק היד שנייה, והאם יש לו מחירון או לפחות הערכת מחיר? ענה בקצרה."
         payload = {
             "model": "sonar-medium-online",
             "messages": [
-                {"role": "system", "content": "ענה רק 'כן' או 'לא'."},
+                {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל ויש מחירון', 'נפוץ בישראל ויש הערכת מחיר', או 'לא נפוץ בישראל'."},
                 {"role": "user", "content": query}
             ]
         }
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             answer = r.json()["choices"][0]["message"]["content"].strip().lower()
-            if "כן" in answer:
+            debug_info[model_name] = answer
+            if ("לא נפוץ" in answer) or ("לא נמכר" in answer):
+                continue
+            if any(w in answer for w in ["נפוץ", "נמכר", "קיים", "כן"]) and any(w in answer for w in ["מחיר", "שווי", "הערכה"]):
                 filtered.append(model_name)
-        except Exception:
-            pass
-    return filtered
+        except Exception as e:
+            debug_info[model_name] = f"שגיאה: {e}"
+    return filtered, debug_info
 
 def fetch_models_data_with_perplexity(models):
-    """שלב 2 – Perplexity: חיפוש חי על כל דגם"""
+    """שלב 3 – Perplexity: שליפת נתונים מורחבת"""
     url = "https://api.perplexity.ai/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
     all_data = {}
     for model_name in models:
-        query = f"מידע עדכני על {model_name} בישראל: אמינות, מחירון יד שנייה, צריכת דלק, יתרונות וחסרונות."
+        query = f"""
+        הבא מידע עדכני על {model_name} בישראל, כולל:
+        - מחירון ממוצע ליד שנייה
+        - עלות ביטוח ממוצעת
+        - אגרת רישוי וטסט שנתית
+        - עלות טיפולים שנתית ממוצעת
+        - תקלות נפוצות
+        - צריכת דלק אמיתית
+        - ירידת ערך ממוצעת
+        - דירוג בטיחות
+        - זמינות חלפים ועלותם
+        - ביקוש בשוק היד שנייה
+        """
         payload = {
             "model": "sonar-medium-online",
             "messages": [
-                {"role": "system", "content": "תחזיר מידע עובדתי ועדכני בלבד."},
+                {"role": "system", "content": "החזר מידע עובדתי ותמציתי בלבד, בעברית."},
                 {"role": "user", "content": query}
             ]
         }
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
             all_data[model_name] = r.json()["choices"][0]["message"]["content"]
         except Exception:
             all_data[model_name] = "❌ שגיאה בשליפת מידע"
     return all_data
 
 def final_recommendation_with_gpt(answers, models, models_data):
-    """שלב 3 – GPT: שילוב הכל להמלצה סופית"""
+    """שלב 4 – GPT: המלצה סופית"""
     text = f"""
     תשובות המשתמש:
     {answers}
@@ -140,13 +154,14 @@ def final_recommendation_with_gpt(answers, models, models_data):
     דגמים זמינים בישראל:
     {models}
 
-    מידע עובדתי מ־Perplexity:
+    נתונים על כל דגם:
     {models_data}
 
     צור המלצה סופית בעברית:
-    - הצג 5 דגמים בלבד (אם יש פחות – הצג את מה שנמצא)
-    - הוסף נימוק לכל דגם בהתבסס על הדרישות של המשתמש
+    - הצג עד 5 דגמים בלבד
+    - הוסף נימוק אישי לכל דגם
     - השווה יתרונות וחסרונות
+    - כלול שיקולים כלכליים (ביטוח, מחירון, תחזוקה) ושיקולי שימוש (בטיחות, אמינות, נוחות)
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -173,15 +188,18 @@ if submitted:
         initial_models = analyze_needs_with_gpt(answers)
     st.info(f"📋 דגמים ראשוניים: {initial_models}")
 
-    with st.spinner("🇮🇱 מסנן דגמים שלא זמינים בישראל..."):
-        israeli_models = filter_models_for_israel(initial_models)
+    with st.spinner("🇮🇱 מסנן דגמים (ישראל + מחירון/הערכה)..."):
+        israeli_models, debug_info = filter_models_for_israel(initial_models)
+
+    with st.expander("🔎 תשובות Perplexity לסינון"):
+        st.write(debug_info)
 
     if not israeli_models:
-        st.error("❌ לא נמצאו דגמים זמינים בישראל לפי הדרישות שלך.")
+        st.error("❌ לא נמצאו דגמים זמינים בישראל עם מחירון או הערכת מחיר.")
     else:
         st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
 
-        with st.spinner("🌐 שולף מידע חי מ־Perplexity..."):
+        with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity..."):
             models_data = fetch_models_data_with_perplexity(israeli_models)
 
         with st.spinner("⚡ יוצר המלצה סופית עם GPT..."):
