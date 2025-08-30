@@ -5,19 +5,19 @@ import streamlit as st
 from openai import OpenAI
 
 # =============================
-# שליפת מפתחות API
+# מפתחות API
 # =============================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 if not OPENAI_API_KEY or not PERPLEXITY_API_KEY:
-    st.error("❌ לא נמצאו מפתחות API. ודא שהגדרת אותם בסיקרטס.")
+    st.error("❌ לא נמצאו מפתחות API. ודא שהגדרת אותם ב-secrets.")
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =============================
-# פונקציית קריאה בטוחה ל־Perplexity
+# קריאה בטוחה ל-Perplexity
 # =============================
 def safe_perplexity_call(payload):
     url = "https://api.perplexity.ai/chat/completions"
@@ -31,41 +31,34 @@ def safe_perplexity_call(payload):
     except Exception as e:
         return f"שגיאה: {e}"
 
-# =============================
-# שאלון – 40 שאלות (מקוצר כאן)
-# =============================
-questions = [
-    "מה טווח התקציב שלך לרכב?",
-    "מה התקציב המינימלי שלך בשקלים?",
-    "מה התקציב המקסימלי שלך בשקלים?",
-    "כמה קילומטרים אתה נוסע בממוצע בחודש?",
-    "האם הרכב מיועד בעיקר לנסיעות עירוניות או בין-עירוניות?",
-    "כמה אנשים יושבים בדרך כלל ברכב?",
-    "האם אתה זקוק לתא מטען גדול?",
-    "אתה מתכנן לנסוע הרבה עם ציוד כבד או גרירה?",
-    "אתה מעדיף רכב בנזין, דיזל, היברידי או חשמלי?",
-    "האם חסכון בדלק קריטי עבורך?",
-    # ... (שאר השאלות)
-]
+def extract_numbers_from_text(text):
+    numbers = re.findall(r'\d{1,3}(?:[ ,]\d{3})*|\d+', text)
+    clean = []
+    for n in numbers:
+        try:
+            clean.append(int(n.replace(",", "").replace(" ", "")))
+        except:
+            pass
+    return clean
 
 # =============================
-# פונקציות Pipeline
+# שלב 1 – GPT מציע דגמים ראשוניים
 # =============================
-
 def analyze_needs_with_gpt(answers):
-    """שלב 1 – GPT: רשימת דגמים ראשונית (מותאמים לישראל + תקציב)"""
-    min_budget = answers.get("מה התקציב המינימלי שלך בשקלים?", "")
-    max_budget = answers.get("מה התקציב המקסימלי שלך בשקלים?", "")
+    min_budget = answers["budget_min"]
+    max_budget = answers["budget_max"]
+    engine = answers["engine"]
 
     prompt = f"""
-    אלו התשובות מהמשתמש:
+    המשתמש נתן את ההעדפות:
     {answers}
 
     החזר רשימה של 5–7 דגמי רכבים מתאימים.
-    חשוב:
-    - הצע רק רכבים שנמכרים בישראל בפועל (יד שנייה).
-    - כלול רק רכבים שהמחירון שלהם ביד שנייה נמצא בטווח {min_budget} עד {max_budget} שקלים.
-    - החזר רשימה נקייה: רק שם הדגם, כל דגם בשורה נפרדת, בלי מספרים ובלי הסברים.
+    דרישות חובה:
+    - רק דגמים שנמכרים בישראל ביד שנייה.
+    - רק רכבים שהמחירון שלהם ביד שנייה נמצא בטווח {min_budget}–{max_budget} ₪.
+    - רק רכבים עם מנוע {engine}, אם קיים בישראל.
+    החזר רשימה נקייה: כל שורה שם דגם בלבד, בלי מספרים ובלי הסברים.
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -76,33 +69,23 @@ def analyze_needs_with_gpt(answers):
     clean_models = []
     for line in text.split("\n"):
         line = line.strip()
-        if not line:
-            continue
-        line = re.sub(r"^[0-9\.\-\•\*\s]+", "", line)
-        if len(line.split()) <= 6:
-            clean_models.append(line)
+        if line:
+            line = re.sub(r"^[0-9\.\-\•\*\s]+", "", line)
+            if len(line.split()) <= 6:
+                clean_models.append(line)
     return clean_models
 
-def extract_numbers_from_text(text):
-    """מחלץ מספרים מהטקסט"""
-    numbers = re.findall(r'\d{1,3}(?:[ ,]\d{3})*|\d+', text)
-    clean_numbers = []
-    for n in numbers:
-        try:
-            clean_numbers.append(int(n.replace(",", "").replace(" ", "")))
-        except:
-            pass
-    return clean_numbers
-
-def filter_models_for_israel(models, min_budget, max_budget):
-    """שלב 2 – סינון לפי זמינות בישראל + מחירון אמיתי מול התקציב"""
+# =============================
+# שלב 2 – סינון עם Perplexity
+# =============================
+def filter_models_for_israel(models, min_budget, max_budget, engine):
     filtered, debug_info = [], {}
     for model_name in models:
         payload = {
-            "model": "sonar",  # מודל מהיר לתשובות קצרות
+            "model": "sonar",
             "messages": [
-                {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל, מחירון 12-18 אלף ₪' או 'לא נפוץ בישראל'."},
-                {"role": "user", "content": f"האם {model_name} נמכר בישראל, ומה טווח המחירים האמיתי שלו ביד שנייה?"}
+                {"role": "system", "content": "ענה בקצרה, למשל: 'נפוץ בישראל, מחירון 12-18 אלף ₪, מנוע דיזל'."},
+                {"role": "user", "content": f"האם {model_name} נמכר בישראל ביד שנייה עם מנוע {engine}? ומה טווח המחירים האמיתי שלו?"}
             ]
         }
         answer = safe_perplexity_call(payload)
@@ -113,31 +96,30 @@ def filter_models_for_israel(models, min_budget, max_budget):
             if "לא נפוץ" in ans or "לא נמכר" in ans:
                 continue
 
-            # חילוץ טווח מחיר והשוואה לתקציב
             nums = extract_numbers_from_text(answer)
             if len(nums) >= 2:
                 low, high = min(nums), max(nums)
                 if low <= max_budget and high >= min_budget:
                     filtered.append(model_name)
             else:
-                # אם לא מצא מספרים אבל כן כתוב נפוץ → נאשר גמיש
                 if "נפוץ" in ans or "נמכר" in ans:
                     filtered.append(model_name)
 
     return filtered, debug_info
 
+# =============================
+# שלב 3 – נתונים מלאים מ-Perplexity
+# =============================
 def fetch_models_data_with_perplexity(models, answers):
-    """שלב 2 – Perplexity: נתונים מלאים (10 פרמטרים)"""
     all_data = {}
+    engine = answers["engine"]
     for model_name in models:
         payload = {
-            "model": "sonar-pro",  # מודל חזק יותר להחזיר מידע מפורט
+            "model": "sonar-pro",
             "messages": [
                 {"role": "system", "content": "החזר מידע עובדתי ותמציתי בלבד, בעברית."},
                 {"role": "user", "content": f"""
-                תשובות המשתמש: {answers}
-
-                הבא מידע עדכני על {model_name} בישראל, לפי:
+                הבא מידע עדכני על {model_name} בישראל עם מנוע {engine}, לפי:
                 1. טווח מחירון ממוצע ביד שנייה (מספרים!)
                 2. זמינות ונפוצות בישראל
                 3. עלות ביטוח ממוצעת
@@ -148,8 +130,6 @@ def fetch_models_data_with_perplexity(models, answers):
                 8. ירידת ערך ממוצעת
                 9. דירוג בטיחות
                 10. זמינות חלפים בישראל
-
-                החזר תשובה כרשימה ממוספרת 1–10 בלבד.
                 """}
             ]
         }
@@ -157,8 +137,10 @@ def fetch_models_data_with_perplexity(models, answers):
         all_data[model_name] = answer
     return all_data
 
+# =============================
+# שלב 4 – GPT מסכם המלצה
+# =============================
 def final_recommendation_with_gpt(answers, models, models_data):
-    """שלב 3 – GPT: המלצה סופית"""
     text = f"""
     תשובות המשתמש:
     {answers}
@@ -171,9 +153,8 @@ def final_recommendation_with_gpt(answers, models, models_data):
 
     צור המלצה סופית בעברית:
     - הצג עד 5 דגמים בלבד
-    - הוסף נימוק אישי לכל דגם
-    - השווה יתרונות וחסרונות
-    - כלול שיקולים כלכליים (מחירון, ביטוח, תחזוקה) ושימושיים (בטיחות, נוחות, אמינות)
+    - פרט יתרונות וחסרונות
+    - כלול נימוקים אישיים לפי התקציב, סוג המנוע והשימושים
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -190,9 +171,20 @@ st.title("🚗 Car-Advisor – יועץ רכבים חכם")
 
 with st.form("car_form"):
     st.write("ענה על השאלון:")
+
     answers = {}
-    for q in questions:
-        answers[q] = st.text_input(q, "")
+    answers["budget_range"] = st.selectbox("מה טווח התקציב שלך לרכב?", ["5–10K", "10–20K", "20–40K", "40K+"])
+    answers["budget_min"] = int(st.text_input("תקציב מינימלי (₪)", "10000"))
+    answers["budget_max"] = int(st.text_input("תקציב מקסימלי (₪)", "20000"))
+    answers["km"] = st.selectbox("כמה קילומטרים אתה נוסע בחודש?", ["<1000", "1000–2000", "2000–4000", "4000+"])
+    answers["engine"] = st.radio("איזה סוג מנוע אתה מעדיף?", ["בנזין", "דיזל", "היברידי", "חשמלי"])
+    answers["usage"] = st.radio("מה השימוש העיקרי ברכב?", ["עירוני", "בין-עירוני", "מעורב"])
+    answers["size"] = st.selectbox("איזה גודל רכב מתאים לך?", ["קטן", "משפחתי", "SUV", "טנדר"])
+    answers["passengers"] = st.radio("כמה אנשים נוסעים לרוב ברכב?", ["1", "2–3", "4–5", "6+"])
+    answers["fuel_eff"] = st.radio("עד כמה חשוב חסכון בדלק?", ["לא חשוב", "בינוני", "חשוב מאוד"])
+    answers["safety"] = st.radio("עד כמה חשובה רמת בטיחות?", ["נמוך", "בינוני", "גבוה מאוד"])
+    answers["extra"] = st.text_area("יש משהו נוסף שחשוב לציין?")
+
     submitted = st.form_submit_button("שלח וקבל המלצה")
 
 if submitted:
@@ -200,26 +192,20 @@ if submitted:
         initial_models = analyze_needs_with_gpt(answers)
     st.info(f"📋 דגמים ראשוניים: {initial_models}")
 
-    # תקציב מהשאלון
-    try:
-        min_budget = int(answers.get("מה התקציב המינימלי שלך בשקלים?", "0").replace("אלף","000").replace(" ",""))
-    except:
-        min_budget = 0
-    try:
-        max_budget = int(answers.get("מה התקציב המקסימלי שלך בשקלים?", "999999").replace("אלף","000").replace(" ",""))
-    except:
-        max_budget = 999999
+    min_budget = answers["budget_min"]
+    max_budget = answers["budget_max"]
+    engine = answers["engine"]
 
-    with st.spinner("🇮🇱 מסנן דגמים מול מחירון האמיתי..."):
-        israeli_models, debug_info = filter_models_for_israel(initial_models, min_budget, max_budget)
+    with st.spinner("🇮🇱 מסנן דגמים מול מחירון אמיתי וסוג מנוע..."):
+        israeli_models, debug_info = filter_models_for_israel(initial_models, min_budget, max_budget, engine)
 
     with st.expander("🔎 תשובות Perplexity לסינון"):
         st.write(debug_info)
 
     if not israeli_models:
-        st.error("❌ לא נמצאו דגמים זמינים בישראל בטווח המחירים שציינת.")
+        st.error("❌ לא נמצאו דגמים זמינים בישראל בהתאם לתקציב ולסוג המנוע שבחרת.")
     else:
-        st.success(f"✅ דגמים זמינים בישראל בתקציב: {israeli_models}")
+        st.success(f"✅ דגמים זמינים בישראל: {israeli_models}")
 
         with st.spinner("🌐 שולף נתונים מלאים מ־Perplexity..."):
             models_data = fetch_models_data_with_perplexity(israeli_models, answers)
