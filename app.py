@@ -208,9 +208,11 @@ with st.form("car_form"):
 if submitted:
     with st.spinner("📊 סינון ראשוני מול מאגר משרד התחבורה..."):
         verified_models = filter_with_mot(answers)
+        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models)  # DEBUG
 
     with st.spinner("🌐 Perplexity בונה טבלת פרמטרים..."):
         params_data = fetch_models_10params(answers, verified_models)
+        st.write("🔍 DEBUG – פלט Perplexity גולמי:", params_data)  # DEBUG
 
     try:
         df_params = pd.DataFrame(params_data).T
@@ -268,3 +270,4 @@ if os.path.exists(log_file):
             file_name="car_advisor_logs.csv",
             mime="text/csv"
         )
+
