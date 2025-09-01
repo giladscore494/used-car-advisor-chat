@@ -57,28 +57,14 @@ def parse_perplexity_json(answer):
         return {}
 
 # =============================
-# פונקציית נרמול דלק
-# =============================
-def normalize_fuel(val):
-    if not isinstance(val, str):
-        return ""
-    return (
-        val.strip()
-           .replace("-", "")
-           .replace("־", "")   # מקף עברי
-           .replace(" ", "")   # מסיר רווחים
-           .lower()
-    )
-
-# =============================
 # שלב 1 – סינון ראשוני מול מאגר משרד התחבורה
 # =============================
 def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
     if not os.path.exists(mot_file):
         st.error(f"❌ קובץ המאגר '{mot_file}' לא נמצא בתיקייה. ודא שהעלית אותו.")
-        return []
+        return [], []
 
-    df = pd.read_csv(mot_file, encoding="utf-8-sig", sep=",", on_bad_lines="skip")
+    df = pd.read_csv(mot_file, encoding="utf-8-sig", on_bad_lines="skip")
 
     for col in ["year", "engine_cc"]:
         if col in df.columns:
@@ -92,32 +78,35 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
     mask_year = df["year"].between(year_min, year_max, inclusive="both")
     mask_cc = df["engine_cc"].between(cc_min, cc_max, inclusive="both")
 
-    df["fuel_norm"] = df["fuel"].apply(normalize_fuel)
-    engine_norm = normalize_fuel(answers["engine"])
-    mask_fuel = (answers["engine"] == "לא משנה") | (df["fuel_norm"] == engine_norm)
-
+    mask_fuel = (answers["engine"] == "לא משנה") | (df["fuel"] == answers["engine"])
     mask_gear = (answers["gearbox"] == "לא משנה") | \
                 ((answers["gearbox"] == "אוטומט") & (df["automatic"] == 1)) | \
                 ((answers["gearbox"] == "ידני") & (df["automatic"] == 0))
 
     df_filtered = df[mask_year & mask_cc & mask_fuel & mask_gear].copy()
 
-    return df_filtered.to_dict(orient="records")
+    return df_filtered.to_dict(orient="records"), df.head(10).to_dict(orient="records")
 
 # =============================
 # שלב 2 – Perplexity בונה טבלת פרמטרים
 # =============================
-def fetch_models_10params(answers, verified_models):
+def fetch_models_10params(answers, verified_models, example_rows):
     if not verified_models:
         models_text = "לא נמצאו דגמים מתאימים במאגר, תייצר הצעות כלליות לפי ההעדפות"
     else:
         models_text = json.dumps(verified_models, ensure_ascii=False)
 
+    examples_text = json.dumps(example_rows, ensure_ascii=False)
+
     prompt = f"""
+יש לך טבלה ממאגר משרד התחבורה בפורמט JSON.
+כך נראות 10 שורות לדוגמה:
+{examples_text}
+
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
-רשימת דגמים ממאגר משרד התחבורה (בפורמט JSON של רשימת אובייקטים):
+רשימת דגמים מסוננים:
 {models_text}
 
 הנחיות:
@@ -204,7 +193,7 @@ with st.form("car_form"):
     answers["budget_min"] = int(st.text_input("תקציב מינימלי (₪)", "5000"))
     answers["budget_max"] = int(st.text_input("תקציב מקסימלי (₪)", "20000"))
 
-    answers["engine"] = st.radio("מנוע מועדף:", ["בנזין", "דיזל", "היברידי-בנזין", "היברידי-דיזל", "חשמל"])
+    answers["engine"] = st.radio("מנוע מועדף:", ["לא משנה", "בנזין", "דיזל", "היברידי-בנזין", "היברידי-דיזל", "חשמל"])
     answers["engine_cc_min"] = int(st.text_input("נפח מנוע מינימלי (סמ״ק):", "1200"))
     answers["engine_cc_max"] = int(st.text_input("נפח מנוע מקסימלי (סמ״ק):", "2000"))
     answers["year_min"] = st.text_input("שנת ייצור מינימלית:", "2000")
@@ -232,11 +221,11 @@ with st.form("car_form"):
 # =============================
 if submitted:
     with st.spinner("📊 סינון ראשוני מול מאגר משרד התחבורה..."):
-        verified_models = filter_with_mot(answers)
-        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models[:5], f"(סה\"כ {len(verified_models)})")
+        verified_models, example_rows = filter_with_mot(answers)
+        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models[:5])
 
     with st.spinner("🌐 Perplexity בונה טבלת פרמטרים..."):
-        params_data = fetch_models_10params(answers, verified_models)
+        params_data = fetch_models_10params(answers, verified_models, example_rows)
         st.write("🔍 DEBUG – פלט Perplexity גולמי:", params_data)
 
     try:
@@ -261,7 +250,7 @@ if submitted:
         st.session_state["df_params"] = df_params
 
         st.subheader("🟩 טבלת פרמטרים")
-        st.dataframe(df_params, use_container_width=True)
+        st.dataframe(df_params, width="stretch")
 
     except Exception as e:
         st.warning("⚠️ בעיה בנתוני JSON")
