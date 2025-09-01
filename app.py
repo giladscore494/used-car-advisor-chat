@@ -107,44 +107,47 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
 # =============================
 def fetch_models_10params(answers, verified_models):
     if not verified_models:
-        models_text = "[]"
-    else:
-        models_text = json.dumps(verified_models[:10], ensure_ascii=False)
+        return {}
+
+    # ניקח עד 10 דגמים לדוגמה ונמיר לטבלה קריאה
+    sample_df = pd.DataFrame(verified_models[:10])
+    models_text = sample_df.to_markdown(index=False)
 
     prompt = f"""
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
-רשימת דגמים ממאגר משרד התחבורה (JSON עד 10 שורות לדוגמה):
+רשימת דגמים ממאגר משרד התחבורה (טבלה עד 10 שורות לדוגמה):
 {models_text}
 
 החזר אך ורק JSON תקין בפורמט הבא, ללא טקסט נוסף:
 {{
-  "BMW X1 XDRIVE25E 2020 היברידי-בנזין": {{
-     "price_range": "₪80,000–₪120,000",
-     "availability": "נפוץ בישראל",
-     "insurance_total": "₪6,000",
-     "license_fee": "₪2,200",
-     "maintenance": "₪4,000",
-     "common_issues": "תקלות במערכת חשמלית",
-     "fuel_consumption": "15 ק״מ לליטר",
-     "depreciation": "10%",
-     "safety": "5 כוכבים",
-     "parts_availability": "גבוהה",
-     "turbo": 1,
+  "מותג דגם שנה מנוע דלק": {{
+     "price_range": "₪xx,xxx–₪yy,yyy",
+     "availability": "נפוץ/נדיר בישראל",
+     "insurance_total": "₪xxxx",
+     "license_fee": "₪xxxx",
+     "maintenance": "₪xxxx",
+     "common_issues": "תקלות נפוצות",
+     "fuel_consumption": "xx ק״מ לליטר",
+     "depreciation": "xx%",
+     "safety": "דירוג בטיחות",
+     "parts_availability": "גבוהה/נמוכה",
+     "turbo": 0/1,
      "out_of_budget": false
   }}
 }}
 
 חוקים:
-- עבור על כל דגם ברשימה שסופקה.
+- עבור על כל דגם ברשימה שסופקה בלבד (לא להמציא).
 - חובה להחזיר JSON בלבד.
-- אם טווח המחיר מחוץ לתקציב ({answers['budget_min']}–{answers['budget_max']} ₪) → החזר "out_of_budget": true.
+- אם טווח המחיר מחוץ לתקציב ({answers['budget_min']}–{answers['budget_max']} ₪) → "out_of_budget": true.
 - אם בטווח → "out_of_budget": false.
-- אסור להמציא מחירים לא קשורים – אם לא ידוע כתוב "לא ידוע".
+- אם נתון לא ידוע כתוב "לא ידוע".
 """
     answer = safe_perplexity_call(prompt)
     return parse_perplexity_json(answer)
+
 
 # =============================
 # שלב 3 – GPT מסכם ומדרג
