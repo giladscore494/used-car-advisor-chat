@@ -62,7 +62,13 @@ def parse_perplexity_json(answer):
 def normalize_fuel(val):
     if not isinstance(val, str):
         return ""
-    return val.strip().replace("-", "").replace("־", "").replace(" ", "").lower()
+    return (
+        val.strip()
+           .replace("-", "")
+           .replace("־", "")   # מקף עברי
+           .replace(" ", "")   # מסיר רווחים
+           .lower()
+    )
 
 # =============================
 # שלב 1 – סינון ראשוני מול מאגר משרד התחבורה
@@ -72,8 +78,7 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
         st.error(f"❌ קובץ המאגר '{mot_file}' לא נמצא בתיקייה. ודא שהעלית אותו.")
         return []
 
-    # קריאה נכונה ל-CSV
-    df = pd.read_csv(mot_file, encoding="utf-8", sep=",", on_bad_lines="skip")
+    df = pd.read_csv(mot_file, encoding="utf-8-sig", sep=",", on_bad_lines="skip")
 
     for col in ["year", "engine_cc"]:
         if col in df.columns:
@@ -87,7 +92,6 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
     mask_year = df["year"].between(year_min, year_max, inclusive="both")
     mask_cc = df["engine_cc"].between(cc_min, cc_max, inclusive="both")
 
-    # נרמול דלק
     df["fuel_norm"] = df["fuel"].apply(normalize_fuel)
     engine_norm = normalize_fuel(answers["engine"])
     mask_fuel = (answers["engine"] == "לא משנה") | (df["fuel_norm"] == engine_norm)
@@ -229,7 +233,7 @@ with st.form("car_form"):
 if submitted:
     with st.spinner("📊 סינון ראשוני מול מאגר משרד התחבורה..."):
         verified_models = filter_with_mot(answers)
-        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models)
+        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models[:5], f"(סה\"כ {len(verified_models)})")
 
     with st.spinner("🌐 Perplexity בונה טבלת פרמטרים..."):
         params_data = fetch_models_10params(answers, verified_models)
