@@ -57,12 +57,12 @@ def parse_perplexity_json(answer):
         return {}
 
 # =============================
-# פונקציית נרמול – שומרת על מקפים
+# פונקציית נרמול
 # =============================
 def normalize_text(val):
     if not isinstance(val, str):
         return ""
-    return val.strip().lower()
+    return val.strip().replace("-", "").replace("־", "").replace(" ", "").lower()
 
 # =============================
 # שלב 1 – סינון ראשוני מול מאגר משרד התחבורה
@@ -107,14 +107,6 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
 # =============================
 def fetch_models_10params(answers, verified_models):
     if not verified_models:
-        return {}
-
-    # ניקח עד 10 דגמים לדוגמה ונמיר לטבלה קריאה
-    sample_df = pd.DataFrame(verified_models[:10])
-    models_text = sample_df.to_markdown(index=False)
- 
-def fetch_models_10params(answers, verified_models):
-    if not verified_models:
         models_text = "[]"
     else:
         models_text = json.dumps(verified_models[:10], ensure_ascii=False)
@@ -148,21 +140,8 @@ def fetch_models_10params(answers, verified_models):
   }}
 }}
 """
-
     answer = safe_perplexity_call(prompt)
     return parse_perplexity_json(answer)
-
-
-חוקים:
-- עבור על כל דגם ברשימה שסופקה בלבד (לא להמציא).
-- חובה להחזיר JSON בלבד.
-- אם טווח המחיר מחוץ לתקציב ({answers['budget_min']}–{answers['budget_max']} ₪) → "out_of_budget": true.
-- אם בטווח → "out_of_budget": false.
-- אם נתון לא ידוע כתוב "לא ידוע".
-"""
-    answer = safe_perplexity_call(prompt)
-    return parse_perplexity_json(answer)
-
 
 # =============================
 # שלב 3 – GPT מסכם ומדרג
