@@ -112,7 +112,14 @@ def fetch_models_10params(answers, verified_models):
     # ניקח עד 10 דגמים לדוגמה ונמיר לטבלה קריאה
     sample_df = pd.DataFrame(verified_models[:10])
     models_text = sample_df.to_markdown(index=False)
-   prompt = f"""
+ 
+def fetch_models_10params(answers, verified_models):
+    if not verified_models:
+        models_text = "[]"
+    else:
+        models_text = json.dumps(verified_models[:10], ensure_ascii=False)
+
+    prompt = f"""
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
@@ -140,6 +147,10 @@ def fetch_models_10params(answers, verified_models):
      "out_of_budget": false
   }}
 }}
+"""
+
+    answer = safe_perplexity_call(prompt)
+    return parse_perplexity_json(answer)
 
 
 חוקים:
