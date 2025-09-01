@@ -57,12 +57,12 @@ def parse_perplexity_json(answer):
         return {}
 
 # =============================
-# פונקציית נרמול
+# פונקציית נרמול – שומרת על מקפים
 # =============================
 def normalize_text(val):
     if not isinstance(val, str):
         return ""
-    return val.strip().replace("-", "").replace("־", "").replace(" ", "").lower()
+    return val.strip().lower()
 
 # =============================
 # שלב 1 – סינון ראשוני מול מאגר משרד התחבורה
