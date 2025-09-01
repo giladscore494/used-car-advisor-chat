@@ -57,12 +57,20 @@ def parse_perplexity_json(answer):
         return {}
 
 # =============================
+# פונקציית נרמול
+# =============================
+def normalize_text(val):
+    if not isinstance(val, str):
+        return ""
+    return val.strip().replace("-", "").replace("־", "").replace(" ", "").lower()
+
+# =============================
 # שלב 1 – סינון ראשוני מול מאגר משרד התחבורה
 # =============================
 def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
     if not os.path.exists(mot_file):
         st.error(f"❌ קובץ המאגר '{mot_file}' לא נמצא בתיקייה. ודא שהעלית אותו.")
-        return [], []
+        return []
 
     df = pd.read_csv(mot_file, encoding="utf-8-sig", on_bad_lines="skip")
 
@@ -70,6 +78,16 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # נרמול
+    df["fuel_norm"] = df["fuel"].apply(normalize_text)
+    engine_norm = normalize_text(answers["engine"])
+
+    df["gearbox_norm"] = df["automatic"].apply(lambda x: "אוטומט" if x == 1 else "ידני")
+
+    st.write("🔍 DEBUG – ערכי fuel ייחודיים:", df["fuel"].unique())
+    st.write("🔍 DEBUG – ערכי fuel_norm ייחודיים:", df["fuel_norm"].unique())
+
+    # סינון
     year_min = int(answers["year_min"])
     year_max = int(answers["year_max"])
     cc_min = int(answers["engine_cc_min"])
@@ -77,64 +95,53 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
 
     mask_year = df["year"].between(year_min, year_max, inclusive="both")
     mask_cc = df["engine_cc"].between(cc_min, cc_max, inclusive="both")
-
-    mask_fuel = (answers["engine"] == "לא משנה") | (df["fuel"] == answers["engine"])
-    mask_gear = (answers["gearbox"] == "לא משנה") | \
-                ((answers["gearbox"] == "אוטומט") & (df["automatic"] == 1)) | \
-                ((answers["gearbox"] == "ידני") & (df["automatic"] == 0))
+    mask_fuel = (answers["engine"] == "לא משנה") | (df["fuel_norm"] == engine_norm)
+    mask_gear = (answers["gearbox"] == "לא משנה") | (df["gearbox_norm"] == answers["gearbox"])
 
     df_filtered = df[mask_year & mask_cc & mask_fuel & mask_gear].copy()
 
-    return df_filtered.to_dict(orient="records"), df.head(10).to_dict(orient="records")
+    return df_filtered.to_dict(orient="records")
 
 # =============================
 # שלב 2 – Perplexity בונה טבלת פרמטרים
 # =============================
-def fetch_models_10params(answers, verified_models, example_rows):
+def fetch_models_10params(answers, verified_models):
     if not verified_models:
-        models_text = "לא נמצאו דגמים מתאימים במאגר, תייצר הצעות כלליות לפי ההעדפות"
+        models_text = "[]"
     else:
-        models_text = json.dumps(verified_models, ensure_ascii=False)
-
-    examples_text = json.dumps(example_rows, ensure_ascii=False)
+        models_text = json.dumps(verified_models[:10], ensure_ascii=False)
 
     prompt = f"""
-יש לך טבלה ממאגר משרד התחבורה בפורמט JSON.
-כך נראות 10 שורות לדוגמה:
-{examples_text}
-
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
-רשימת דגמים מסוננים:
+רשימת דגמים ממאגר משרד התחבורה (JSON עד 10 שורות לדוגמה):
 {models_text}
 
-הנחיות:
-- עבור על כל דגם ברשימה (או אם אין דגמים → תייצר הצעות כלליות מתאימות לשוק הישראלי).
-- תבנה עבור כל דגם אובייקט חדש במבנה הבא:
-
+החזר אך ורק JSON תקין בפורמט הבא, ללא טקסט נוסף:
 {{
-  "Model (year, engine, fuel)": {{
-     "price_range": "טווח מחירון ביד שנייה בישראל (₪)",
-     "availability": "זמינות בישראל",
-     "insurance_total": "עלות ביטוח חובה + צד ג' (₪)",
-     "license_fee": "אגרת רישוי/טסט שנתית (₪)",
-     "maintenance": "תחזוקה שנתית ממוצעת (₪)",
-     "common_issues": "תקלות נפוצות",
-     "fuel_consumption": "צריכת דלק אמיתית (ק״מ לליטר)",
-     "depreciation": "ירידת ערך ממוצעת (%)",
-     "safety": "דירוג בטיחות (כוכבים)",
-     "parts_availability": "זמינות חלפים בישראל",
-     "turbo": 0/1,
+  "BMW X1 XDRIVE25E 2020 היברידי-בנזין": {{
+     "price_range": "₪80,000–₪120,000",
+     "availability": "נפוץ בישראל",
+     "insurance_total": "₪6,000",
+     "license_fee": "₪2,200",
+     "maintenance": "₪4,000",
+     "common_issues": "תקלות במערכת חשמלית",
+     "fuel_consumption": "15 ק״מ לליטר",
+     "depreciation": "10%",
+     "safety": "5 כוכבים",
+     "parts_availability": "גבוהה",
+     "turbo": 1,
      "out_of_budget": false
   }}
 }}
 
 חוקים:
-- חובה להחזיר טווח מחירון אמיתי מהשוק הישראלי בלבד.
+- עבור על כל דגם ברשימה שסופקה.
+- חובה להחזיר JSON בלבד.
 - אם טווח המחיר מחוץ לתקציב ({answers['budget_min']}–{answers['budget_max']} ₪) → החזר "out_of_budget": true.
 - אם בטווח → "out_of_budget": false.
-- אסור להמציא מחירים. אם לא ידוע → "לא ידוע".
+- אסור להמציא מחירים לא קשורים – אם לא ידוע כתוב "לא ידוע".
 """
     answer = safe_perplexity_call(prompt)
     return parse_perplexity_json(answer)
@@ -221,11 +228,11 @@ with st.form("car_form"):
 # =============================
 if submitted:
     with st.spinner("📊 סינון ראשוני מול מאגר משרד התחבורה..."):
-        verified_models, example_rows = filter_with_mot(answers)
-        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models[:5])
+        verified_models = filter_with_mot(answers)
+        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models)
 
     with st.spinner("🌐 Perplexity בונה טבלת פרמטרים..."):
-        params_data = fetch_models_10params(answers, verified_models, example_rows)
+        params_data = fetch_models_10params(answers, verified_models)
         st.write("🔍 DEBUG – פלט Perplexity גולמי:", params_data)
 
     try:
@@ -250,7 +257,7 @@ if submitted:
         st.session_state["df_params"] = df_params
 
         st.subheader("🟩 טבלת פרמטרים")
-        st.dataframe(df_params, width="stretch")
+        st.dataframe(df_params, use_container_width=True)
 
     except Exception as e:
         st.warning("⚠️ בעיה בנתוני JSON")
