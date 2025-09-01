@@ -112,7 +112,6 @@ def fetch_models_10params(answers, verified_models):
     # ניקח עד 10 דגמים לדוגמה ונמיר לטבלה קריאה
     sample_df = pd.DataFrame(verified_models[:10])
     models_text = sample_df.to_markdown(index=False)
-
    prompt = f"""
 המשתמש נתן את ההעדפות הבאות:
 {answers}
