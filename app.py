@@ -113,30 +113,35 @@ def fetch_models_10params(answers, verified_models):
     sample_df = pd.DataFrame(verified_models[:10])
     models_text = sample_df.to_markdown(index=False)
 
-    prompt = f"""
+   prompt = f"""
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
-רשימת דגמים ממאגר משרד התחבורה (טבלה עד 10 שורות לדוגמה):
+רשימת דגמים ממאגר משרד התחבורה (JSON עד 10 שורות לדוגמה):
 {models_text}
 
-החזר אך ורק JSON תקין בפורמט הבא, ללא טקסט נוסף:
+חובה להחזיר אך ורק JSON תקין עבור כל דגם ברשימה שסופקה.
+אסור להחזיר דגמים אחרים.
+אם אין נתונים מתאימים, החזר JSON ריק: {{}}
+
+פורמט נדרש לדוגמה:
 {{
-  "מותג דגם שנה מנוע דלק": {{
-     "price_range": "₪xx,xxx–₪yy,yyy",
-     "availability": "נפוץ/נדיר בישראל",
-     "insurance_total": "₪xxxx",
-     "license_fee": "₪xxxx",
-     "maintenance": "₪xxxx",
-     "common_issues": "תקלות נפוצות",
-     "fuel_consumption": "xx ק״מ לליטר",
-     "depreciation": "xx%",
-     "safety": "דירוג בטיחות",
-     "parts_availability": "גבוהה/נמוכה",
-     "turbo": 0/1,
+  "BMW 530E 2019 היברידי-בנזין": {{
+     "price_range": "₪80,000–₪120,000",
+     "availability": "נפוץ בישראל",
+     "insurance_total": "₪6,000",
+     "license_fee": "₪2,200",
+     "maintenance": "₪4,000",
+     "common_issues": "תקלות במערכת חשמלית",
+     "fuel_consumption": "15 ק״מ לליטר",
+     "depreciation": "10%",
+     "safety": "5 כוכבים",
+     "parts_availability": "גבוהה",
+     "turbo": 1,
      "out_of_budget": false
   }}
 }}
+
 
 חוקים:
 - עבור על כל דגם ברשימה שסופקה בלבד (לא להמציא).
