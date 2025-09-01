@@ -6,6 +6,7 @@ import datetime
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
+import io
 
 # =============================
 # מפתחות API
@@ -37,24 +38,20 @@ def safe_perplexity_call(prompt, model="llama-3.1-sonar-large-128k-online"):
         r = requests.post(url, headers=headers, json=payload, timeout=120)
         data = r.json()
         if "choices" not in data:
-            return f"שגיאת Perplexity: {data}"
+            return ""
         return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"שגיאה: {e}"
+    except Exception:
+        return ""
 
 # =============================
-# פיענוח JSON
+# פיענוח טבלה מ-Perplexity
 # =============================
-def parse_perplexity_json(answer):
-    cleaned = answer.strip()
-    if "```" in cleaned:
-        match = re.search(r"```(?:json)?(.*?)```", cleaned, re.DOTALL)
-        if match:
-            cleaned = match.group(1).strip()
+def parse_perplexity_table(answer):
     try:
-        return json.loads(cleaned)
+        dfs = pd.read_html(io.StringIO(answer))
+        return dfs[0]  # לוקח את הטבלה הראשונה
     except Exception:
-        return {}
+        return pd.DataFrame()
 
 # =============================
 # פונקציית נרמול
@@ -84,9 +81,6 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
 
     df["gearbox_norm"] = df["automatic"].apply(lambda x: "אוטומט" if x == 1 else "ידני")
 
-    st.write("🔍 DEBUG – ערכי fuel ייחודיים:", df["fuel"].unique())
-    st.write("🔍 DEBUG – ערכי fuel_norm ייחודיים:", df["fuel_norm"].unique())
-
     # סינון
     year_min = int(answers["year_min"])
     year_max = int(answers["year_max"])
@@ -103,9 +97,9 @@ def filter_with_mot(answers, mot_file="car_models_israel_clean.csv"):
     return df_filtered.to_dict(orient="records")
 
 # =============================
-# שלב 2 – Perplexity בונה טבלת פרמטרים
+# שלב 2 – Perplexity מחזיר טבלה
 # =============================
-def fetch_models_10params(answers, verified_models):
+def fetch_models_table(answers, verified_models):
     if not verified_models:
         models_text = "[]"
     else:
@@ -115,51 +109,32 @@ def fetch_models_10params(answers, verified_models):
 המשתמש נתן את ההעדפות הבאות:
 {answers}
 
-רשימת דגמים ממאגר משרד התחבורה (JSON עד 10 שורות לדוגמה):
+רשימת דגמים מסוננים (עד 10 שורות):
 {models_text}
 
-חובה להחזיר אך ורק JSON תקין עבור כל דגם ברשימה שסופקה.
-אסור להחזיר דגמים אחרים.
-אם אין נתונים מתאימים, החזר JSON ריק: {{}}
-
-פורמט נדרש לדוגמה:
-{{
-  "BMW 530E 2019 היברידי-בנזין": {{
-     "price_range": "₪80,000–₪120,000",
-     "availability": "נפוץ בישראל",
-     "insurance_total": "₪6,000",
-     "license_fee": "₪2,200",
-     "maintenance": "₪4,000",
-     "common_issues": "תקלות במערכת חשמלית",
-     "fuel_consumption": "15 ק״מ לליטר",
-     "depreciation": "10%",
-     "safety": "5 כוכבים",
-     "parts_availability": "גבוהה",
-     "turbo": 1,
-     "out_of_budget": false
-  }}
-}}
+החזר אך ורק טבלה בפורמט Markdown עם עמודות:
+דגם | טווח מחירון (₪) | זמינות בישראל | ביטוח (₪) | אגרת רישוי (₪) | תחזוקה (₪) | תקלות נפוצות | צריכת דלק (ק״מ/ל׳) | ירידת ערך (%) | בטיחות | חלפים בישראל | טורבו | מחוץ לתקציב
 """
     answer = safe_perplexity_call(prompt)
-    return parse_perplexity_json(answer)
+    return parse_perplexity_table(answer)
 
 # =============================
 # שלב 3 – GPT מסכם ומדרג
 # =============================
-def final_recommendation_with_gpt(answers, params_data):
+def final_recommendation_with_gpt(answers, df_params):
     text = f"""
     תשובות המשתמש:
     {answers}
 
-    נתוני פרמטרים:
-    {params_data}
+    טבלת פרמטרים:
+    {df_params.to_dict(orient="records")}
 
     צור סיכום בעברית:
     - בחר עד 5 דגמים בלבד
-    - אל תכלול דגמים עם "out_of_budget": true
+    - אל תכלול דגמים עם 'מחוץ לתקציב' = true
     - פרט יתרונות וחסרונות
     - התייחס לעלות ביטוח, תחזוקה, ירידת ערך, אמינות ושימוש עיקרי
-    - הסבר למה הדגמים הכי מתאימים
+    - הצג את הניתוח אחרי הטבלה
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -171,11 +146,11 @@ def final_recommendation_with_gpt(answers, params_data):
 # =============================
 # פונקציית לוג
 # =============================
-def save_log(answers, params_data, summary, filename="car_advisor_logs.csv"):
+def save_log(answers, df_params, summary, filename="car_advisor_logs.csv"):
     record = {
         "timestamp": datetime.datetime.now().isoformat(),
         "answers": json.dumps(answers, ensure_ascii=False),
-        "params_data": json.dumps(params_data, ensure_ascii=False),
+        "params_data": df_params.to_json(orient="records", force_ascii=False),
         "summary": summary,
     }
     if os.path.exists(filename):
@@ -226,65 +201,19 @@ with st.form("car_form"):
 if submitted:
     with st.spinner("📊 סינון ראשוני מול מאגר משרד התחבורה..."):
         verified_models = filter_with_mot(answers)
-        st.write("🔍 DEBUG – דגמים אחרי סינון MOT:", verified_models)
 
     with st.spinner("🌐 Perplexity בונה טבלת פרמטרים..."):
-        params_data = fetch_models_10params(answers, verified_models)
-        st.write("🔍 DEBUG – פלט Perplexity גולמי:", params_data)
+        df_params = fetch_models_table(answers, verified_models)
 
-    try:
-        df_params = pd.DataFrame(params_data).T
-
-        COLUMN_TRANSLATIONS = {
-            "price_range": "טווח מחירון",
-            "availability": "זמינות בישראל",
-            "insurance_total": "ביטוח חובה + צד ג׳",
-            "license_fee": "אגרת רישוי",
-            "maintenance": "תחזוקה שנתית",
-            "common_issues": "תקלות נפוצות",
-            "fuel_consumption": "צריכת דלק",
-            "depreciation": "ירידת ערך",
-            "safety": "בטיחות",
-            "parts_availability": "חלפים בישראל",
-            "turbo": "טורבו",
-            "out_of_budget": "מחוץ לתקציב"
-        }
-        df_params.rename(columns=COLUMN_TRANSLATIONS, inplace=True)
-
-        st.session_state["df_params"] = df_params
-
+    if not df_params.empty:
         st.subheader("🟩 טבלת פרמטרים")
         st.dataframe(df_params, use_container_width=True)
 
-    except Exception as e:
-        st.warning("⚠️ בעיה בנתוני JSON")
-        st.write(params_data)
+        with st.spinner("⚡ GPT מסכם ומדרג..."):
+            summary = final_recommendation_with_gpt(answers, df_params)
+            st.subheader("🔎 ההמלצה הסופית שלך")
+            st.write(summary)
 
-    with st.spinner("⚡ GPT מסכם ומדרג..."):
-        summary = final_recommendation_with_gpt(answers, params_data)
-        st.session_state["summary"] = summary
-
-    st.subheader("🔎 ההמלצה הסופית שלך")
-    st.write(st.session_state["summary"])
-
-    save_log(answers, params_data, st.session_state["summary"])
-
-# =============================
-# הורדת טבלה מה-session
-# =============================
-if "df_params" in st.session_state:
-    csv2 = st.session_state["df_params"].to_csv(index=True, encoding="utf-8-sig")
-    st.download_button("⬇️ הורד טבלת פרמטרים", csv2, "params_data.csv", "text/csv")
-
-# =============================
-# כפתור הורדה של כל ההיסטוריה
-# =============================
-log_file = "car_advisor_logs.csv"
-if os.path.exists(log_file):
-    with open(log_file, "rb") as f:
-        st.download_button(
-            "⬇️ הורד את כל היסטוריית השאלונים",
-            f,
-            file_name="car_advisor_logs.csv",
-            mime="text/csv"
-        )
+        save_log(answers, df_params, summary)
+    else:
+        st.warning("⚠️ לא התקבלה טבלת פרמטרים תקינה מ-Perplexity")
