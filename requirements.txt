@@ -1,5 +1,7 @@
-streamlit==1.49.1
-pandas==2.3.2
-openai==1.102.0
-requests==2.32.5
-tabulate
+streamlit
+pandas
+openai
+requests
+lxml
+html5lib
+beautifulsoup4
